@@ -27,7 +27,7 @@ usable parity with NKMS well before audio or packaging exist.
   encrypted messages over loopback; a peer with the wrong keypair is
   rejected; measure round-trip overhead to confirm it's negligible.
 
-- [ ] **3. Local control channel** (`internal/ipc`) — Unix domain socket
+- [x] **3. Local control channel** (`internal/ipc`) — Unix domain socket
   protocol between `niox-helper` and `niox-daemon`: connect, a trivial
   status/ping exchange, permission-restricted socket file.
   *Verification*: start both binaries by hand, confirm they connect and
