@@ -1,0 +1,8 @@
+/bin/
+*.exe
+*.test
+*.out
+.DS_Store
+
+# Reference-only copies of the predecessor projects, each its own git repo.
+/old/
