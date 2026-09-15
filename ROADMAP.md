@@ -19,7 +19,7 @@ usable parity with NKMS well before audio or packaging exist.
   `--print-config` smoke check confirms keypair generation is stable
   across restarts.
 
-- [ ] **2. Transport spike** (`internal/transport`) — Noise protocol
+- [x] **2. Transport spike** (`internal/transport`) — Noise protocol
   handshake + per-packet ChaCha20-Poly1305 AEAD wrapping a UDP socket,
   proven standalone before anything depends on it — same spirit as
   audio-switcher's `spike-send`/`spike-recv` loopback test.
