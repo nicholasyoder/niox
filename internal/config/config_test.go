@@ -41,6 +41,53 @@ func TestLoadIsStableAcrossRestarts(t *testing.T) {
 	}
 }
 
+func TestLoadAppliesKMDefaultsOnFirstRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "niox.toml")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KM.HotkeyPrimary != DefaultHotkeyPrimary {
+		t.Errorf("HotkeyPrimary = %d, want default %d", cfg.KM.HotkeyPrimary, DefaultHotkeyPrimary)
+	}
+	if cfg.KM.HotkeySecondary != DefaultHotkeySecondary {
+		t.Errorf("HotkeySecondary = %d, want default %d", cfg.KM.HotkeySecondary, DefaultHotkeySecondary)
+	}
+
+	// The defaults must have been persisted, not just applied in memory.
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.KM.HotkeyPrimary != DefaultHotkeyPrimary || reloaded.KM.HotkeySecondary != DefaultHotkeySecondary {
+		t.Errorf("defaults did not survive a reload: %+v", reloaded.KM)
+	}
+}
+
+func TestLoadPreservesExplicitSingleKeyHotkey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "niox.toml")
+
+	// A user who wants single-key mode explicitly zeroes HotkeySecondary
+	// and saves -- once persisted, that 0 must not be re-defaulted to 41
+	// on the next load (only HotkeyPrimary=0 is always "unconfigured").
+	cfg := &Config{
+		Identity: Identity{PrivateKey: Key{1}, PublicKey: Key{2}},
+		KM:       KM{Role: "host", HotkeyPrimary: 125, HotkeySecondary: 0},
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.KM.HotkeySecondary != 0 {
+		t.Errorf("HotkeySecondary = %d, want 0 (explicit single-key mode)", got.KM.HotkeySecondary)
+	}
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "niox.toml")
 

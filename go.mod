@@ -4,6 +4,7 @@ go 1.24.4
 
 require (
 	github.com/flynn/noise v1.1.0
+	github.com/holoplot/go-evdev v0.0.0-20260909133534-d873ed210bda
 	github.com/pelletier/go-toml/v2 v2.4.3
 )
 

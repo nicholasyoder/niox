@@ -33,7 +33,7 @@ usable parity with NKMS well before audio or packaging exist.
   *Verification*: start both binaries by hand, confirm they connect and
   exchange a status message; confirm a non-owning user can't connect.
 
-- [ ] **4. KM end-to-end, single client, Linux only** (`internal/km`,
+- [x] **4. KM end-to-end, single client, Linux only** (`internal/km`,
   wired through milestones 2 and 3) — port NKMS's `evdev` capture,
   hotkey/focus detection, and `uinput` playback into Go, split across
   `niox-helper` (capture/send, receive/write) and `niox-daemon` (focus

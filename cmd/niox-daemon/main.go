@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -37,33 +39,35 @@ func main() {
 	printConfig := flag.Bool("print-config", false, "load (or create) the config file and print it, then exit")
 	flag.Parse()
 
+	if err := os.MkdirAll(filepath.Dir(*configPath), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
+		os.Exit(1)
+	}
+
 	if *printConfig {
-		if err := os.MkdirAll(filepath.Dir(*configPath), 0o700); err != nil {
-			fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
-			os.Exit(1)
-		}
-		cfg, err := config.Load(*configPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
-			os.Exit(1)
-		}
 		fmt.Printf("config path:   %s\n", *configPath)
 		fmt.Printf("public key:    %s\n", base64.StdEncoding.EncodeToString(cfg.Identity.PublicKey))
 		fmt.Printf("known peers:   %d\n", len(cfg.Peers))
+		fmt.Printf("km role:       %s\n", cfg.KM.Role)
 		return
 	}
 
-	if err := serve(*socketPath); err != nil {
+	if err := serve(*socketPath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// serve listens on the control socket and answers each connection's ping
-// with a status reply, until interrupted. The rest of niox-daemon (audio,
-// focus bus, HTTP control API) isn't implemented yet -- this proves the
-// control channel end to end per ROADMAP.md milestone 3.
-func serve(socketPath string) error {
+// serve listens on the control socket and, per connection, answers pings,
+// answers MessageTypeHello with the KM config niox-helper needs to run its
+// hot path (see ARCHITECTURE.md -- niox-helper never reads the TOML file
+// itself), and logs MessageTypeFocus updates, until interrupted.
+func serve(socketPath string, cfg *config.Config) error {
 	ln, err := ipc.Listen(socketPath)
 	if err != nil {
 		return err
@@ -86,24 +90,45 @@ func serve(socketPath string) error {
 			}
 			return err
 		}
-		go handleConn(conn)
+		go handleConn(conn, cfg)
 	}
 }
 
-func handleConn(conn *ipc.Conn) {
+func handleConn(conn *ipc.Conn, cfg *config.Config) {
 	defer conn.Close()
 
-	msg, err := conn.Recv()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "niox-daemon: recv from %s: %v\n", conn.RemoteAddr(), err)
-		return
-	}
-	if msg.Type != ipc.MessageTypePing {
-		fmt.Fprintf(os.Stderr, "niox-daemon: unexpected message type %q\n", msg.Type)
-		return
-	}
+	for {
+		msg, err := conn.Recv()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				fmt.Fprintf(os.Stderr, "niox-daemon: recv from %s: %v\n", conn.RemoteAddr(), err)
+			}
+			return
+		}
 
-	if err := conn.Send(ipc.Message{Type: ipc.MessageTypeStatus, Ready: true}); err != nil {
-		fmt.Fprintf(os.Stderr, "niox-daemon: send to %s: %v\n", conn.RemoteAddr(), err)
+		var reply ipc.Message
+		switch msg.Type {
+		case ipc.MessageTypePing:
+			reply = ipc.Message{Type: ipc.MessageTypeStatus, Ready: true}
+		case ipc.MessageTypeHello:
+			reply = ipc.Message{Type: ipc.MessageTypeConfig, Config: &ipc.KMConfig{
+				Identity:        cfg.Identity,
+				Peers:           cfg.Peers,
+				Role:            cfg.KM.Role,
+				HotkeyPrimary:   cfg.KM.HotkeyPrimary,
+				HotkeySecondary: cfg.KM.HotkeySecondary,
+			}}
+		case ipc.MessageTypeFocus:
+			fmt.Printf("niox-daemon: focus changed to %q\n", msg.Focus)
+			continue
+		default:
+			fmt.Fprintf(os.Stderr, "niox-daemon: unexpected message type %q\n", msg.Type)
+			return
+		}
+
+		if err := conn.Send(reply); err != nil {
+			fmt.Fprintf(os.Stderr, "niox-daemon: send to %s: %v\n", conn.RemoteAddr(), err)
+			return
+		}
 	}
 }
