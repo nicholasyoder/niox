@@ -430,6 +430,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "niox-km"
+version = "0.1.0"
+dependencies = [
+ "niox-config",
+ "niox-transport",
+ "thiserror",
+]
+
+[[package]]
 name = "niox-transport"
 version = "0.1.0"
 dependencies = [

@@ -198,6 +198,32 @@ user session.
   whose IP changed keeps working. Subsystems get per-peer up/down events.
   On the test VMs, round trips take about 50µs (p50), and one sending
   thread manages about 1 Gbit/s.
+- **KM protocol** (`niox-km`; message layout in its `wire` module):
+  - *Ordering.* Each evdev frame (the events up to a `SYN_REPORT`) is
+    one datagram, so a frame is never split or reordered internally; the
+    receiver appends the `SYN_REPORT`. Frames also carry a per-session
+    sequence number. LAN reordering is rare, but when a frame arrives
+    after a newer one, the client plays only its key releases: replaying
+    a stale press could leave a key stuck down, and a stale motion is
+    worthless, while a release can only un-stick a key. Lost frames are
+    never resent.
+  - *Capabilities.* The host sends the union of its captured devices'
+    capabilities (event codes as bitmaps, absolute-axis ranges, input
+    properties) to each client when its session comes up and whenever
+    they change, resending with backoff (250ms doubling to 2s) until
+    acknowledged. A client recreates its virtual device only if the
+    capabilities grew, and keeps the union. A client joins the focus
+    cycle once it has acknowledged capabilities in the current session.
+  - *Focus.* The hotkey state machine is NKMS's, with two fixes (see
+    `niox_km::Switcher`). Focus cycles host → each ready client in config
+    order → host, tracked by identity so clients joining and leaving
+    never move it to a different machine. If the focused client drops,
+    focus returns to the host.
+  - *Held keys.* The host tracks which keys are down on each target.
+    When focus leaves a target, everything held there is released, and
+    a key's later repeats and release never reach a target that didn't
+    see its press. A client releases everything its host left held when
+    the session drops.
 - **Control messages that must arrive** (e.g. the capabilities exchange)
   are acknowledged and resent. Per-event KM traffic is not.
 - Each machine has a keypair; a client trusts a host (and vice versa) by
@@ -349,8 +375,6 @@ once it has a design.
 - Where the HTTP control API runs on a headless host: in `niox-session`
   under a lingering user, or in a separate unprivileged system service
   so the web UI needs no user session at all.
-- KM ordering: per-event sequence numbers vs. one datagram per evdev
-  SYN frame.
 - How audio packets reach the network. nioxd owns the identity keypair
   and the per-peer transport session, but audio lives in the unprivileged
   niox-session. Either niox-session hands Roc packets to nioxd over a

@@ -110,7 +110,7 @@ are and just get checked off; nothing moves into this section.
   each side, then both, and unplug the network for 30s; each case
   recovers within a few seconds. Record benchmark numbers in the commit.
 
-- [ ] **KM: protocol + focus logic** — the I/O-free part of `niox-km`:
+- [x] **KM: protocol + focus logic** — the I/O-free part of `niox-km`:
   - Settle KM ordering (ARCHITECTURE.md open question). The lean is one
     datagram per evdev SYN frame so a frame can't be split or reordered
     internally, which may make a sequence number unnecessary. Record the
