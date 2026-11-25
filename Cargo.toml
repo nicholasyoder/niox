@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 niox-config = { path = "crates/niox-config" }
+niox-transport = { path = "crates/niox-transport" }
 
 [workspace.lints.rust]
 unsafe_code = "deny" # crates that need FFI opt in locally with #[allow(unsafe_code)]

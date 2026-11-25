@@ -165,6 +165,20 @@ user session.
   use, but embedded directly in niox's own sockets rather than requiring an
   external tunnel, virtual network interface, or separate daemon.
   Per-packet cost is microseconds of CPU time with zero added round-trips.
+- **Wire format** (`niox-transport`; full table in its crate docs):
+  datagrams of at most 1280 bytes (the IPv6 minimum MTU) with a
+  version/type prefix. A two-message KK handshake exchanges each side's
+  session index; the init also carries a timestamp, and a responder only
+  accepts an init newer than the last one it accepted from that peer, so
+  a captured init can't be replayed. Data datagrams carry the receiver's
+  index and an explicit counter (the AEAD nonce), so each decrypts on its
+  own whatever was lost or reordered, and a 1984-counter sliding window
+  drops duplicates. As in WireGuard, the cleartext header isn't AEAD
+  associated data (snow's stateless mode has none); every field is still
+  bound, because the counter is the nonce and a changed index selects
+  keys that won't open the datagram. The first plaintext byte names the
+  subsystem (`km`, `audio`), so all subsystems share one session per
+  peer; an empty payload is a keepalive.
 - **Session liveness**: sessions carry keepalives. Either side restarting,
   or a network drop, is detected and recovered by an automatic
   re-handshake using the same configured keys. No re-pairing is needed,

@@ -1,0 +1,22 @@
+[package]
+name = "niox-transport"
+description = "niox's Noise-encrypted UDP transport, shared by the KM and audio subsystems"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+niox-config.workspace = true
+# Only the primitives KK_25519_ChaChaPoly_BLAKE2s needs. snow's "std" feature
+# is left off: it unconditionally pulls in ring, and nothing here needs it.
+snow = { version = "0.10.0", default-features = false, features = [
+    "use-blake2",
+    "use-chacha20poly1305",
+    "use-curve25519",
+    "use-getrandom",
+] }
+thiserror = "2.0.21"

@@ -72,7 +72,7 @@ are and just get checked off; nothing moves into this section.
   generation, file permissions, and rejection of malformed keys,
   duplicate peers, and unknown roles.
 
-- [ ] **Transport: handshake + packet layer** — the socket-free core of
+- [x] **Transport: handshake + packet layer** — the socket-free core of
   `niox-transport`:
   - Noise_KK_25519_ChaChaPoly_BLAKE2s via `snow`; data packets use
     `StatelessTransportState` with explicit nonces.
@@ -97,6 +97,12 @@ are and just get checked off; nothing moves into this section.
     detection. Either side restarting, or a network drop, triggers an
     automatic re-handshake with no manual action. This replaces NKMS's
     "stay down 2s so clients notice" workaround.
+  - Match an incoming init to its peer by source address, falling back to
+    trying each configured peer's key (`respond` fails with `Auth` for the
+    wrong one). Answer a retransmitted init by resending the cached
+    response, since `respond` rejects it as a replay. Track each peer's
+    newest accepted init timestamp, and resolve both sides initiating at
+    once.
   - Per-peer up/down events for subsystems to react to.
   - Send/recv examples and a throughput/latency benchmark.
 
