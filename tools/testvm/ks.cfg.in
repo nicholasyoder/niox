@@ -1,0 +1,41 @@
+# Kickstart for niox test VMs. Rendered by create-vm.sh (@HOSTNAME@, @ENV@, @SSHKEY@).
+text
+lang en_US.UTF-8
+keyboard us
+timezone America/New_York --utc
+network --bootproto=dhcp --device=link --activate --hostname=@HOSTNAME@
+url --mirrorlist=https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-45&arch=x86_64
+repo --name=updates --mirrorlist=https://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f45&arch=x86_64
+
+rootpw --lock
+user --name=dev --password=devpass --plaintext --groups=wheel
+sshkey --username=dev "@SSHKEY@"
+
+firewall --enabled --service=ssh --port=4777:udp
+selinux --enforcing
+services --enabled=sshd,qemu-guest-agent
+
+zerombr
+clearpart --all --initlabel
+autopart
+bootloader --timeout=1
+
+reboot
+
+%packages
+@^@ENV@
+qemu-guest-agent
+openssh-server
+evtest
+libinput-utils
+rsync
+# KDE's first-boot wizard would hijack the login screen; the user is created above.
+-plasma-setup
+%end
+
+%post
+echo 'dev ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev
+chmod 0440 /etc/sudoers.d/dev
+systemctl set-default graphical.target
+touch /etc/plasma-setup-done
+%end
