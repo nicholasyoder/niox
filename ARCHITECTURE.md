@@ -131,6 +131,39 @@ user session.
   everything mixed in "always mix" mode — selected in config).
 - Runs the HTTP control API and serves the web UI (see below). Config
   edits are sent to nioxd over IPC rather than written directly.
+- Learns everything from nioxd: it subscribes on the control socket and
+  keeps a view of focus and each peer's name, role, and connection, which
+  is the config slice it needs (nioxd's config file is root-only, and
+  niox-session never reads it). Later subsystems add their settings to
+  the status nioxd publishes (e.g. the `[audio]` table).
+- When nioxd isn't there (stopped, restarting, not yet started), it
+  retries with backoff (250ms doubling to 5s), logging an outage once,
+  and reports whatever changed while it was away when the new snapshot
+  arrives. A user outside the `niox` group can't use the socket, so its
+  user unit only starts for members (`ConditionGroup=niox`).
+- **Audio goes through nioxd.** niox-session never holds a Noise session
+  or key: the identity key stays root-only, each peer still has exactly
+  one key, port, and session, and audio inherits KM's liveness and
+  re-handshakes. niox-session asks for an audio channel on its control
+  connection, and nioxd answers by passing it one end of a
+  `SOCK_SEQPACKET` socketpair (`SCM_RIGHTS`); each packet on it is one
+  peer-addressed Roc packet. The channel lasts exactly as long as that
+  control connection, so a crashed niox-session frees it with nothing
+  left in `/run/niox`. nioxd forwards both ways without ever blocking:
+  outbound packets are sealed and sent as `Subsystem::Audio`, and inbound
+  ones are written to the channel from the transport's driver thread
+  with a non-blocking send, dropped if niox-session has fallen behind
+  (Roc conceals the loss). The extra local hop costs microseconds at
+  about 300 packets/s, against a latency target of ~200ms.
+- **One niox-session gets the audio channel: the active seat's.** More
+  than one can be connected (fast user switching, or a lingering user
+  plus a desktop login). nioxd identifies each connection's user with
+  `SO_PEERCRED` and grants the channel to the user active on `seat0`
+  (`ACTIVE_UID=` in `/run/systemd/seats/seat0`, no D-Bus needed),
+  moving it when the active user changes. Only that user's PipeWire can
+  use the audio devices anyway, since logind gives device access to the
+  active session. With nobody active on a seat (a headless host with a
+  lingering user), the first to ask keeps it until it disconnects.
 
 ### Local IPC (nioxd ↔ niox-session / nioxctl)
 
@@ -492,7 +525,10 @@ once it has a design.
 - SELinux: on Fedora the packaged nioxd runs as `unconfined_service_t`
   (`bin_t` started by systemd), so it needs no policy module for
   evdev/uinput access.
-- `niox-session` will ship a `systemctl --user` unit when it exists.
+- `niox-session.service` — niox-session's `systemctl --user` unit
+  (`ConditionGroup=niox`, `WantedBy=default.target`). It goes into the
+  packages with audio, in its own subpackage so KM-only installs don't
+  pull in libroc.
 - Platform priority: Linux only for now. macOS, Windows, and mobile are
   deferred (see below).
 
@@ -518,9 +554,4 @@ once it has a design.
 - Where the HTTP control API runs on a headless host: in `niox-session`
   under a lingering user, or in a separate unprivileged system service
   so the web UI needs no user session at all.
-- How audio packets reach the network. nioxd owns the identity keypair
-  and the per-peer transport session, but audio lives in the unprivileged
-  niox-session. Either niox-session hands Roc packets to nioxd over a
-  local socket (one Noise session per peer, but an extra hop for audio),
-  or it gets its own Noise session per peer (needs a key it can use).
 - Web UI auth mechanism specifics (static token vs. session login).

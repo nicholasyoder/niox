@@ -607,6 +607,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "niox-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "niox-ipc",
+ "tempfile",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "niox-transport"
 version = "0.1.0"
 dependencies = [

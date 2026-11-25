@@ -232,7 +232,7 @@ are and just get checked off; nothing moves into this section.
   *Verification*: test tone from one Fedora machine to another,
   encrypted.
 
-- [ ] **niox-session skeleton** — the optional user-session binary:
+- [x] **niox-session skeleton** — the optional user-session binary:
   connects to nioxd's socket, subscribes to focus events, and gets the
   config slices it needs from nioxd. Includes its `systemctl --user`
   unit. Decide here how audio packets reach the network: through nioxd's
@@ -240,8 +240,27 @@ are and just get checked off; nothing moves into this section.
   peer (see ARCHITECTURE.md open questions). Also decide which
   niox-session nioxd serves when more than one user is logged in (fast
   user switching, or a lingering user plus a desktop login).
+  Decided: audio goes through nioxd's session, and the active seat's
+  user gets it (see ARCHITECTURE.md); building that is the next step.
   *Verification*: niox-session logs focus changes; killing and
   restarting it never affects KM.
+
+- [ ] **Audio channel through nioxd** — the path audio takes to the
+  network, as decided in the niox-session skeleton step:
+  - An `audio` request on the control socket, answered with one end of
+    a `SOCK_SEQPACKET` socketpair passed over `SCM_RIGHTS`, living as
+    long as that control connection.
+  - nioxd forwards Roc packets both ways as `Subsystem::Audio`: outbound
+    sealed and sent per peer, inbound written from the transport's
+    driver thread without blocking, dropped when niox-session lags.
+  - Active-seat arbitration: nioxd grants the channel to the
+    connection whose `SO_PEERCRED` uid is `seat0`'s `ACTIVE_UID`, moves
+    it when the active user changes, and falls back to first come when
+    no seat has an active user.
+  *Verification*: the audio-tone example, run through niox-session's
+  channel instead of its own transport, carries a tone between two VMs.
+  Switching the active user moves the channel. A niox-session that stops
+  reading never delays KM, and `kill -9` of it frees the channel.
 
 - [ ] **Audio: one client → host** — capture from a dedicated PipeWire
   null sink set as the client's default (per
