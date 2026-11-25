@@ -1,0 +1,18 @@
+Source: niox
+Section: utils
+Priority: optional
+Maintainer: Nicholas Yoder <nicholasyoder@proton.me>
+# cargo/rustc come from rustup (rust-toolchain.toml); Debian's are too old.
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.0
+Homepage: https://github.com/nicholasyoder/niox
+Rules-Requires-Root: no
+
+Package: niox
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Share one keyboard and mouse across Linux machines over the LAN
+ niox shares one machine's keyboard and mouse with other Linux machines
+ over an encrypted UDP transport, switching between them with a hotkey.
+ nioxd runs as a system service from boot, so it works at the login screen
+ and on a host with nobody logged in. nioxctl shows and controls it.

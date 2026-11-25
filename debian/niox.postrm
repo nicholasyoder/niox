@@ -1,0 +1,11 @@
+#!/bin/sh
+# On purge, remove nioxd's config, including this machine's keypair. A plain
+# remove keeps it, as do upgrades.
+set -e
+
+if [ "$1" = purge ]; then
+    rm -rf /etc/niox
+fi
+
+#DEBHELPER#
+exit 0

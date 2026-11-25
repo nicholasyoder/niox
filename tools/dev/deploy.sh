@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Builds nioxd and nioxctl (release) and installs them with the development
-# unit on each machine given, over SSH, then restarts nioxd there. Also
-# creates the `niox` group, whose members may use nioxctl. The config
+# Builds nioxd and nioxctl (release) and installs them on each machine given,
+# over SSH, with the packaged unit (dist/nioxd.service, pointed at
+# /usr/local/bin and installed in /etc/systemd/system, so it overrides an
+# installed package's), then restarts nioxd there. Also creates the `niox`
+# group, whose members may use nioxctl. The config
 # (/etc/niox/niox.toml) is left alone; nioxd creates one with a fresh
 # keypair on first start.
 #
@@ -23,8 +25,9 @@ cargo build --release -p nioxd -p nioxctl --manifest-path "$root/Cargo.toml"
 
 for target in "$@"; do
     echo "==> $target"
+    sed 's|/usr/bin/nioxd|/usr/local/bin/nioxd|' "$root/dist/nioxd.service" >"$root/target/nioxd.service"
     scp "${ssh_opts[@]}" -q "$root/target/release/nioxd" "$root/target/release/nioxctl" \
-        "$root/tools/dev/nioxd.service" "$target:/tmp/"
+        "$root/target/nioxd.service" "$target:/tmp/"
     ssh "${ssh_opts[@]}" "$target" 'sudo sh -euc "
         getent group niox >/dev/null || groupadd --system niox
         install -m 0755 /tmp/nioxd /usr/local/bin/nioxd

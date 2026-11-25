@@ -8,9 +8,12 @@ niox testing. Built unattended from the Fedora 45 netinst ISO via kickstart.
 | `niox-host`     | 192.168.122.201 | Fedora Workstation  | KM host (has an extra virtio relative mouse) |
 | `niox-client-a` | 192.168.122.202 | Fedora Workstation  | client, GDM login-screen tests      |
 | `niox-client-b` | 192.168.122.203 | Fedora KDE Plasma   | client, Plasma Login (plasmalogin) / KWin |
+| `niox-debian`   | 192.168.122.204 | Debian 13, GDM + GNOME Shell | `.deb` install tests             |
 
 All: 2 vCPU, 4 GiB RAM, 30 GB qcow2, default NAT network (fixed DHCP
-reservations), qemu-guest-agent, UDP 4777 open in firewalld.
+reservations), qemu-guest-agent. The Fedora VMs have UDP 4777 open in
+firewalld (the RPM's `niox` firewalld service is the packaged way); the
+Debian VM has no firewall.
 
 VMs are kept shut off; boot them (`virsh start <vm>`) only for a test run
 and shut them down after (`virsh shutdown <vm>`).
@@ -24,14 +27,22 @@ dedicated key: `ssh -i ~/.ssh/niox_testvm dev@192.168.122.201`.
     ./create-vm.sh niox-client-a workstation 52:54:00:a1:0e:02 192.168.122.202
     ./create-vm.sh niox-client-b kde         52:54:00:a1:0e:03 192.168.122.203
 
-Each takes 15-30 minutes (packages come from the Fedora mirrors). Then
-snapshot a clean state: `virsh snapshot-create-as <vm> clean`.
+Each takes 15-30 minutes (packages come from the Fedora mirrors). The
+Debian VM starts from Debian's generic cloud image and is set up by
+cloud-init (about 10 minutes):
+
+    ./create-debian-vm.sh debian-13-generic-amd64.qcow2
+
+Then snapshot a clean state: `virsh snapshot-create-as <vm> clean`.
 
 ## Deploying nioxd
 
+To test packages, `./build.sh` (repo root) and install the RPM/`.deb` from
+`target/dist/`. For quicker iteration,
 `tools/dev/deploy.sh -i ~/.ssh/niox_testvm dev@192.168.122.201 ...` builds
-a release nioxd, installs it with the development unit
-(`tools/dev/nioxd.service`, enabled at boot), and restarts it. Put each
+release binaries into `/usr/local/bin` with the packaged unit pointed at
+them (in `/etc/systemd/system`, enabled at boot), and restarts nioxd. It
+builds on Fedora, so its binaries don't run on the Debian VM. Put each
 VM's config in `/etc/niox/niox.toml` (mode `0600`) first; nioxd writes
 one with a fresh keypair if it's missing. For held keys, use QMP rather
 than `send-key` (which releases immediately):

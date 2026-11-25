@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>niox</short>
+  <description>niox: encrypted keyboard/mouse sharing between machines on the LAN. Open on the host and on every client. If you change [transport] port in /etc/niox/niox.toml, open that port instead.</description>
+  <port protocol="udp" port="4777"/>
+</service>

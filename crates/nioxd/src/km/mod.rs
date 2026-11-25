@@ -354,9 +354,7 @@ impl Running {
     /// there are none.
     fn set_clients(&mut self, fatal: &Stop, publisher: &Publisher) -> anyhow::Result<()> {
         let handle = self.endpoint.handle();
-        let clients: Vec<(PeerId, bool)> = peers_with_role(&self.ids, &self.config, Role::Client)
-            .map(|id| (id, handle.is_up(id)))
-            .collect();
+        let clients: Vec<PeerId> = peers_with_role(&self.ids, &self.config, Role::Client).collect();
         if clients.is_empty() {
             if let Some(host) = self.host.take() {
                 host.set_clients(&handle, Vec::new());
@@ -373,6 +371,19 @@ impl Running {
             self.host = Some(host);
         }
         if let Some(host) = &self.host {
+            // Whether each session is up is read under the router lock, which
+            // the transport handler holds while it delivers Up and Down: one
+            // that lands before this is in the snapshot (the transport marks
+            // a peer up before delivering its Up), and one after reaches the
+            // host side through the handler. Reading it earlier would lose an
+            // Up delivered while the host side was being created (e.g. both
+            // machines booting at once), leaving that client never sent
+            // capabilities.
+            let _router = lock(&self.router);
+            let clients = clients
+                .into_iter()
+                .map(|id| (id, handle.is_up(id)))
+                .collect();
             host.set_clients(&handle, clients);
         }
         Ok(())

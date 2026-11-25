@@ -426,13 +426,36 @@ once it has a design.
 ## Packaging & deployment
 
 - **Fedora/RPM is the primary target**; `.deb` is kept building as a
-  secondary target. Both mirror NKMS's existing `rpm/` and `debian/` setups:
-  - `nioxd` — a system unit (root), enabled at boot, analogous to
-    `nkms-daemon` today.
-  - `niox-session` — a `systemctl --user` unit.
-  - A `niox` group, `/etc/niox`, and `/run/niox` (via `RuntimeDirectory=`).
-  - Fedora: a firewalld service definition for niox's UDP ports; SELinux
-    compatibility for the system unit's evdev/uinput access.
+  secondary target. `./build.sh` builds both into `target/dist/` from one
+  source tarball of the tree; the version comes from the workspace
+  `Cargo.toml` (`debian/changelog` must match).
+  - RPM (`rpm/niox.spec`): the crates.io dependencies are vendored into a
+    second source tarball, so rpmbuild and mock build offline with Fedora's
+    cargo.
+  - `.deb` (`debian/`): built in a `debian:trixie` container with rustup's
+    toolchain (from `rust-toolchain.toml`), since Debian's rustc is older
+    than the workspace needs and binaries built on Fedora would need its
+    newer glibc.
+- Shared install pieces live in `dist/`:
+  - `nioxd.service` — a system unit (root), enabled and started on
+    install, ordered before the display manager. It's sandboxed
+    (`ProtectSystem=strict`, a closed device policy allowing `/dev/uinput`
+    and the input device class, so hot-plugged devices work, address
+    families limited to `AF_UNIX`/`AF_INET`/`AF_INET6`/`AF_NETLINK`, and
+    capabilities limited to `CAP_CHOWN` + `CAP_NET_BIND_SERVICE`).
+    `/run/niox` and `/etc/niox` come from `RuntimeDirectory=` and
+    `ConfigurationDirectory=`.
+  - `niox.sysusers` — the `niox` group, created by rpm (Fedora's
+    automatic sysusers handling) and `dh_installsysusers`.
+  - `niox.firewalld.xml` — a firewalld service for UDP 4777. It isn't
+    enabled automatically: `firewall-cmd --permanent --add-service=niox`.
+- `/etc/niox/niox.toml` is not a packaged file: nioxd writes it with a
+  fresh keypair on first start, so upgrades and removal never touch it.
+  Only `apt purge` deletes it.
+- SELinux: on Fedora the packaged nioxd runs as `unconfined_service_t`
+  (`bin_t` started by systemd), so it needs no policy module for
+  evdev/uinput access.
+- `niox-session` will ship a `systemctl --user` unit when it exists.
 - Platform priority: Linux only for now. macOS, Windows, and mobile are
   deferred (see below).
 

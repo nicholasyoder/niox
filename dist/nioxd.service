@@ -1,0 +1,56 @@
+# nioxd: niox's system service. It runs as root from boot, before the
+# display manager, so keyboard/mouse work at the login screen and on a host
+# with nobody logged in. Shipped by the RPM and .deb packages.
+[Unit]
+Description=niox keyboard/mouse service
+Documentation=https://github.com/nicholasyoder/niox
+After=network.target
+Before=display-manager.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/nioxd
+# Re-reads /etc/niox/niox.toml and applies it in place (also `nioxctl
+# reload`, which reports what changed or why the config was refused).
+ExecReload=/bin/kill -HUP $MAINPID
+# /run/niox, for the control socket (/run/niox/niox.sock).
+RuntimeDirectory=niox
+RuntimeDirectoryMode=0755
+# /etc/niox, created if missing and left writable by ProtectSystem= below,
+# since nioxd writes niox.toml (with a fresh keypair) on first start.
+ConfigurationDirectory=niox
+Restart=on-failure
+RestartSec=1
+
+# Sandboxing. nioxd needs: /dev/uinput and /dev/input/* (including devices
+# plugged in later, hence the device class rather than paths), /etc/niox
+# (above), AF_NETLINK for hot-plug (kernel uevents, which PrivateNetwork=
+# would hide), UDP over AF_INET/AF_INET6, AF_UNIX for the control socket
+# and name lookups, CAP_CHOWN to give the control socket to the niox
+# group, and CAP_NET_BIND_SERVICE only if [transport] port is below 1024.
+CapabilityBoundingSet=CAP_CHOWN CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+DeviceAllow=char-input rw
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

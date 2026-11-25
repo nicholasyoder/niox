@@ -32,3 +32,21 @@ A Cargo workspace; crates are added as the roadmap reaches them.
 - `crates/niox-config` -- shared TOML config
 - `web/` -- control UI frontend source
 - `archive/go/` -- archived Go prototype, reference only
+
+## Building and installing
+
+`./build.sh` builds an RPM (with rpmbuild) and a `.deb` (in a Debian
+container, with podman) into `target/dist/`; `./build.sh rpm` or
+`./build.sh deb` builds just one. Installing either one enables and
+starts `nioxd`, which writes `/etc/niox/niox.toml` with a fresh keypair.
+Then, on each machine:
+
+1. `sudo usermod -aG niox $USER` (log in again) to use `nioxctl` without
+   sudo, and `nioxctl pubkey` to get this machine's public key.
+2. Add the other machines as `[[peer]]` entries in `/etc/niox/niox.toml`
+   (see ARCHITECTURE.md's Config section): on the host, each client with
+   `role = "client"`; on a client, the host with `role = "host"`.
+3. `sudo systemctl reload nioxd` (or `nioxctl reload`), then
+   `nioxctl status`.
+4. Fedora: `sudo firewall-cmd --permanent --add-service=niox && sudo firewall-cmd --reload`
+   to open UDP 4777.

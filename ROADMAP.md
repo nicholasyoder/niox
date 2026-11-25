@@ -27,7 +27,8 @@ macOS is deferred (see below).
   `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - Verification that needs real machines ("two machines", "3-machine
   test", login-screen checks) runs on the libvirt test VMs in
-  `tools/testvm/` (host + two clients, GNOME and KDE), without waiting
+  `tools/testvm/` (host + two clients, GNOME and KDE, plus a Debian VM
+  for `.deb` checks), without waiting
   to be asked. Build on the workstation, copy the binaries over, and drive
   input with `virsh send-key` / `mouse_move`. Boot only the VMs a test
   needs, revert to `clean` when a run leaves them in a bad state, and shut
@@ -195,7 +196,7 @@ are and just get checked off; nothing moves into this section.
   cycles and confirm `ls /dev/input/by-id` and `libinput list-devices`
   show no leftovers.
 
-- [ ] **Packaging (RPM first, `.deb` second)** — one build producing
+- [x] **Packaging (RPM first, `.deb` second)** — one build producing
   both:
   - RPM (`rpm/niox.spec`, following NKMS's) as the primary package.
     Debian packaging is kept building alongside it.

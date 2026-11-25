@@ -1,0 +1,2 @@
+# Members of the niox group may use nioxd's control socket (nioxctl).
+g niox -
