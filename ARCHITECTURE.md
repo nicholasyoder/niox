@@ -192,12 +192,10 @@ user session.
 
 ## Repo structure
 
-Single Rust Cargo workspace. niox was first prototyped in Go (through
-single-client KM); it is being ported to Rust, mainly for the audio and
-video ecosystems (PipeWire, GStreamer, real-time audio with no GC) — see
-the "Port to Rust" section of ROADMAP.md. Until the port's cutover step,
-the Go implementation remains in `cmd/` and `internal/` alongside the
-workspace.
+Single Rust Cargo workspace. niox was first prototyped in Go, through
+single-client KM; that code is archived in `archive/go/` as a reference.
+Rust was chosen mainly for the audio and video ecosystems (PipeWire,
+GStreamer, real-time audio with no GC).
 
 ```
 niox/
@@ -213,6 +211,7 @@ niox/
     niox-control/      # HTTP API + web UI (assets embedded in the binary)
     niox-config/       # shared TOML config loading
   web/                 # web UI static assets/frontend source
+  archive/go/          # archived Go prototype, reference only
   old/                 # NKMS and audio-switcher, kept for reference
 ```
 
@@ -266,5 +265,10 @@ once it has a design.
   so the web UI needs no user session at all.
 - KM ordering: per-event sequence numbers vs. one datagram per evdev
   SYN frame.
+- How audio packets reach the network. nioxd owns the identity keypair
+  and the per-peer transport session, but audio lives in the unprivileged
+  niox-session. Either niox-session hands Roc packets to nioxd over a
+  local socket (one Noise session per peer, but an extra hop for audio),
+  or it gets its own Noise session per peer (needs a key it can use).
 - Exact focus-event schema between nioxd and the audio mixer.
 - Web UI auth mechanism specifics (static token vs. session login).

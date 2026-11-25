@@ -3,222 +3,175 @@
 Working order for building niox out, one verifiable step at a time. Items
 are listed in the order to tackle them: the first unchecked item is
 what's next. Steps are deliberately unnumbered so they can be added,
-split, or reordered without renumbering everything after them; refer to
-a step by its name. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
+split, or reordered without renumbering anything; refer to a step by its
+name. Each step should fit in roughly one working session; split any
+that turn out bigger. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
 design each step implements.
 
-**Current priority: port the existing Go code to Rust, then reach full
-Linux parity with NKMS and retire NKMS.** Everything up to the parity
-checkpoint is keyboard/mouse only. Audio, the web UI, and other new
-capabilities come after it. Fedora is the primary target OS, with `.deb`
-packages kept as a secondary target. macOS is deferred (see below).
+**Current priority: keyboard/mouse at full Linux parity with NKMS, then
+retire NKMS.** Audio comes after that, then the web UI. Fedora is the
+primary target OS, with `.deb` packages kept as a secondary target.
+macOS is deferred (see below).
 
-## Done (Go implementation)
+## Ground rules
 
-Built in Go before the decision to move to Rust. This code is the
-reference spec for the port below and is deleted at the cutover step.
+- niox is written in Rust as a single Cargo workspace (layout in
+  ARCHITECTURE.md). Crates are created when a step first needs them.
+- `archive/go/` holds an earlier Go prototype (also tagged
+  `go-prototype`) that reached single-client KM. Use it as a reference
+  for details that worked (packet framing, replay window, evdev device
+  filtering, the hotkey state machine and its tests, NKMS-derived edge
+  cases), not as something to port line by line. Several of its designs
+  are superseded; see `archive/go/README.md`.
+- Every step leaves the workspace passing `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
+- Design for the final shape up front where it's cheap: multiple peers,
+  nioxd owning its config, and a transport that recovers on its own. No
+  step should knowingly build something a later step has to tear out.
 
-- [x] **Project scaffolding** — Go module, package skeleton,
-  `ARCHITECTURE.md`, git init.
+## Done
 
-- [x] **Config foundation** (`internal/config`) — TOML load/save, a
-  per-machine identity keypair (generated on first run), and a peer list
-  (address + public key).
+- [x] **Go prototype** — config, a Noise KK transport spike, local IPC,
+  and single-client KM over the encrypted transport, built in Go.
+  Archived in `archive/go/` when niox moved to Rust, chosen for its audio and
+  video ecosystems (PipeWire, GStreamer, real-time audio with no GC),
+  the FFI Roc needs anyway, and consistency with the author's other
+  projects.
 
-- [x] **Transport spike** (`internal/transport`) — Noise KK handshake
-  + per-packet ChaCha20-Poly1305 AEAD over UDP, with anti-replay.
-  Deliberately spike-scoped: one handshake attempt, no keepalive, no
-  re-handshake (picked up in KM hardening).
+## Keyboard/mouse: road to NKMS parity (Linux)
 
-- [x] **Local control channel** (`internal/ipc`) — Unix domain socket,
-  newline-delimited JSON, permission-restricted socket file.
+- [ ] **Workspace scaffolding + config** — the Cargo workspace and the
+  `niox-config` crate:
+  - Workspace root, `crates/`, shared lints and release profile,
+    `rust-toolchain.toml` pinned to the Fedora rustc, and `Cargo.lock`
+    committed.
+  - Decide and document in ARCHITECTURE.md: the concurrency model (the
+    lean is plain threads + channels in nioxd, with no async runtime on
+    the input hot path), the error-handling convention (`thiserror` in
+    library crates, `anyhow` in binaries), and logging (`tracing`,
+    to the journal under systemd).
+  - Config schema and loading for `/etc/niox/niox.toml` via `serde` +
+    `toml`: identity keypair (base64 X25519, generated on first run and
+    written `0600`), peers with name, address, public key, and per-peer
+    role, and KM settings (hotkeys, defaulting to NKMS's 125 + 41).
+    Validation errors name the offending field. A `--config` override
+    lets development run unprivileged against a local file.
 
-- [x] **KM end-to-end, single client** (`internal/km`) — evdev
-  capture, hotkey/focus switching, and uinput playback ported from NKMS,
-  running over the encrypted transport. At this stage nioxd takes its
-  config from niox-session over IPC, which nioxd independence reverses.
+  *Verification*: unit tests cover round-tripping, first-run key
+  generation, file permissions, and rejection of malformed keys,
+  duplicate peers, and unknown roles.
 
-## Port to Rust
+- [ ] **Transport: handshake + packet layer** — the socket-free core of
+  `niox-transport`:
+  - Noise_KK_25519_ChaChaPoly_BLAKE2s via `snow`; data packets use
+    `StatelessTransportState` with explicit nonces.
+  - Datagram formats: versioned prefix, handshake init/response carrying
+    sender indices and an init timestamp (rejects replayed inits), and a
+    data header with receiver index + counter, within a 1280-byte max.
+    The Go prototype's `packet.go` is a good starting point.
+  - Sliding-window anti-replay.
+  - A subsystem byte at the start of every data payload, so KM now and
+    audio later share one session per peer.
 
-Why Rust: audio (PipeWire, real-time callbacks with no GC) and later
-video (GStreamer) are much better served by Rust's ecosystem, Roc's C
-library needs FFI either way (which erases Go's static-binary advantage),
-and Rust matches the rest of the author's projects. The Go code is small
-enough (~2.9k lines plus ~1.3k lines of tests) that porting now is cheap.
+  *Verification*: unit tests for every parse/encode path, the replay
+  window's edges (duplicates, too-old, far-future, window slide), and a
+  full in-memory handshake and data exchange. Tampered, truncated, and
+  wrong-key datagrams are all rejected.
 
-Ground rules for every port step:
+- [ ] **Transport: peer sessions + liveness** — the socket half: one UDP
+  socket per nioxd, serving every configured peer:
+  - Demultiplex by receiver index and source address. Datagrams from
+    unknown or unauthenticated sources are dropped silently.
+  - Handshake retransmission with backoff, keepalives, and peer-liveness
+    detection. Either side restarting, or a network drop, triggers an
+    automatic re-handshake with no manual action. This replaces NKMS's
+    "stay down 2s so clients notice" workaround.
+  - Per-peer up/down events for subsystems to react to.
+  - Send/recv examples and a throughput/latency benchmark.
 
-- **Behavior parity, not redesign.** Port what the Go code does,
-  including its wire formats, so Go and Rust builds can talk to each
-  other during the port. Redesigns already scheduled (IPC direction,
-  keepalives, multi-client) stay in their own parity steps. Fix obvious
-  bugs, but note each one in the commit.
-- **Tests come along.** Port each Go `_test.go` file alongside its code.
-  The Go tests are the acceptance criteria.
-- **Go and Rust coexist** until the cutover step. Rust lives in a Cargo
-  workspace at the repo root (layout in ARCHITECTURE.md); Go stays in
-  `cmd/` and `internal/` untouched.
-- **Interop is the verification.** Where a step has a wire or file
-  format, check it against the Go build: Rust ↔ Go, both directions.
-- `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` pass at
-  the end of every step.
+  *Verification*: two machines running the examples. Kill and restart
+  each side, then both, and unplug the network for 30s; each case
+  recovers within a few seconds. Record benchmark numbers in the commit.
 
-- [ ] **Workspace scaffolding + config** — Cargo workspace, crate
-  skeleton, toolchain pin, and the `niox-config` crate:
-  - Workspace with `crates/` per ARCHITECTURE.md, shared lint and
-    profile settings, `rust-toolchain.toml` pinned to the Fedora rustc
-    version, and `Cargo.lock` committed.
-  - Decide and document the concurrency model in ARCHITECTURE.md. The
-    lean: plain threads + channels in `nioxd` (a handful of
-    long-lived loops, no async runtime on the input hot path); async only
-    if `niox-session`'s HTTP server needs it later.
-  - Pick the error-handling convention (`thiserror` in library crates,
-    `anyhow` in binaries).
-  - Port `internal/config`: TOML load/save via `serde` + `toml`, base64
-    keys, first-run X25519 keypair generation, and the KM defaults
-    (hotkeys 125 + 41).
+- [ ] **KM: protocol + focus logic** — the I/O-free part of `niox-km`:
+  - Settle KM ordering (ARCHITECTURE.md open question). The lean is one
+    datagram per evdev SYN frame so a frame can't be split or reordered
+    internally, which may make a sequence number unnecessary. Record the
+    decision in ARCHITECTURE.md.
+  - Event wire encoding, and a reliable capabilities exchange (ack +
+    resend) instead of a single unacknowledged datagram.
+  - The hotkey state machine (port the Go prototype's tests, including
+    the synthetic key1-press behavior), and focus cycling over N targets
+    (host → client 1 → client 2 → … → host) with clients joining and
+    leaving. Cover NKMS's client-removal edge cases (`old/nkms` commit
+    31a289a) as unit tests: removing the focused client, the last
+    client, or one before the focused client.
+  - Held-key tracking, so everything held can be released on a target
+    when focus leaves it or its connection drops.
 
-  *Verification*: config tests ported and passing. The Rust crate loads
-  a `niox.toml` written by the Go build, and Go loads one written by
-  Rust, with identical keys, peers, and KM settings.
+  *Verification*: unit tests for all of the above, with no devices or
+  sockets involved.
 
-- [ ] **Transport: handshake + packet layer** — the pure, socket-free
-  half of `internal/transport` in `niox-transport`:
-  - Noise_KK_25519_ChaChaPoly_BLAKE2s via `snow` (handshake state, then
-    `StatelessTransportState` for explicit-nonce data packets).
-  - Port the datagram formats in `packet.go` byte-for-byte (prefix,
-    init/response payloads, data header with receiver index + counter,
-    1280-byte max datagram) and `session.go`'s seal/open.
-  - Port the anti-replay window (`replay.go`).
+- [ ] **KM: local devices** — the device half of `niox-km`, via the
+  `evdev` crate:
+  - Keyboard/mouse device discovery and filtering, exclusive grab,
+    capture loop, unioned capabilities, and uinput virtual device
+    creation and playback.
+  - Ungrab and virtual-device cleanup on every exit path, including
+    panics and signals.
 
-  *Verification*: replay-window and packet tests ported and passing. A
-  test fixture of handshake + data datagrams captured from the Go
-  implementation opens correctly in Rust, given the same keys.
+  *Verification*: on one machine, a test binary grabs the real keyboard
+  and mouse and replays them through a uinput device, so input still
+  works normally. After Ctrl-C and after a forced panic, nothing stays
+  grabbed and `libinput list-devices` shows no leftover virtual device.
 
-- [ ] **Transport: connections + interop** — the socket half:
-  - `Conn` with dial/accept, handshake timeout, send/recv, read
-    deadline, stats, and close, matching `conn.go` semantics (silent
-    drops of stale, duplicate, or unauthenticated datagrams).
-  - Port the spike send/recv tools as `niox-transport` examples, and the
-    benchmarks (`criterion`, or a `cargo bench` harness).
-  - Port `transport_test.go`.
-
-  *Verification*: tests passing. Rust sender → Go receiver and Go sender
-  → Rust receiver both complete a handshake and pass data across two
-  machines. Benchmark numbers recorded in the commit and roughly in line
-  with Go's.
-
-- [ ] **IPC** — port `internal/ipc` to `niox-ipc`: Unix domain socket,
-  newline-delimited JSON via `serde_json`, the same message vocabulary,
-  and the permission-restricted socket file.
-
-  *Verification*: `ipc_test.go` ported and passing. A Rust client talks
-  to the Go `niox-session` (hello → config, ping → status) and a Go
-  client talks to a Rust listener.
-
-- [ ] **KM: wire format + hotkey logic** — the pure half of
-  `internal/km` in `niox-km`: the 9-byte event encoding, JSON
-  capabilities messages, and the hotkey `Switcher` state machine
-  (including the synthetic key1-press behavior).
-
-  *Verification*: `wire_test.go` and `hotkey_test.go` ported and
-  passing. Encoded events and capabilities are byte-identical to Go's
-  for the same inputs.
-
-- [ ] **KM: devices, capture, playback** — the I/O half of `niox-km`
-  using the `evdev` crate (including its uinput support): device
-  discovery and filtering (`devices.go`), grab + capture loop, unioned
-  capabilities, virtual device creation and playback, and the
-  `run_host` / `run_client` loops with connect retry.
-
-  *Verification*: on one machine, a Rust test binary grabs the local
-  keyboard and mouse and replays them through a uinput device. Ungrab
-  and virtual-device cleanup happen on every exit path, including
-  Ctrl-C.
-
-- [ ] **Binaries + end-to-end** — `nioxd` and `niox-session` binaries
-  matching today's Go flags and behavior (socket path, config path,
-  `--print-config`, hello/config handshake, focus reports), with
-  `clap` for argument parsing.
-
-  *Verification*: repeat the Go build's KM end-to-end test entirely
-  on Rust binaries: host drives one client over the encrypted transport,
-  the hotkey switches focus, and niox-session logs focus changes. Then
-  mix: Rust host with Go client, and Go host with Rust client.
-
-- [ ] **Cutover** — delete the Go code (`cmd/`, `internal/`, `go.mod`,
-  `go.sum`), update `.gitignore` (`/target`), README's layout section,
-  and ARCHITECTURE.md (remove port-in-progress notes and any remaining Go
-  references). Move this section's items into "Done".
-
-  *Verification*: a fresh clone builds and tests with `cargo build` and
-  `cargo test` alone. `grep -ri golang` finds nothing outside `old/`.
-
-## Road to NKMS parity (Linux)
-
-- [ ] **nioxd independence** — make `nioxd` a standalone
-  system service that works with no user logged in (login screen,
-  headless host), per ARCHITECTURE.md's privilege model:
-  - nioxd reads its own root-owned config
-    (`/etc/niox/niox.toml`, `0600`), which holds the identity keypair,
-    peers, and KM settings. It no longer depends on niox-session to start.
-  - The IPC direction flips: nioxd listens on
-    `/run/niox/niox.sock` (root-owned, group `niox`, `0660`) and
-    niox-session connects to it as an optional client. Session-side
-    requests that change config (from the future web UI) go through the
-    nioxd, which owns the file.
-  - KM keeps working if niox-session is absent, crashes, or restarts.
+- [ ] **KM end-to-end, single client** — the `nioxd` binary as a
+  standalone root service:
+  - nioxd reads its own `/etc/niox/niox.toml`, joins the transport, and
+    runs as host or client per config. It needs no user session.
+  - The host sends to the focused client; the client plays into its
+    virtual device. Held keys are released on focus change and on
+    disconnect, on both sides.
+  - A development systemd unit for testing at boot (final packaging
+    comes later).
 
   *Verification*: on a client sitting at the GDM login screen, type the
   password from the host and log in. On a host with nobody logged in,
-  drive a client. Kill and restart niox-session and confirm KM is
-  unaffected.
+  drive a client. Restart host, client, then both mid-session, and
+  unplug the network while holding a key; each recovers within a few
+  seconds with nothing stuck down.
 
-- [ ] **KM hardening** — the robustness NKMS earned the hard way, done
-  properly at the transport/protocol level:
-  - Keepalives and peer-liveness detection in `transport`. Either side
-    restarting, or a network drop, triggers an automatic re-handshake
-    with no manual action. This replaces NKMS's "stay down 2s so clients
-    notice" workaround.
-  - Reliable capabilities exchange (ack + resend). Today it is a single
-    unacknowledged UDP datagram.
-  - No stuck keys or buttons: release everything held on the outgoing
-    target when focus switches or the connection drops, and release
-    everything on the client's virtual device when it loses the host.
-  - Decide how KM handles reordering. Either add a sequence number to
-    the event wire format, or batch each evdev SYN frame into one
-    datagram so a frame can't be split or reordered internally.
-
-  *Verification*: restart host, then client, then both, mid-session. Each
-  recovers within a few seconds with nothing stuck down. Unplug the
-  network cable while holding a key, then reconnect. Drop the first
-  capabilities packet (a test hook) and confirm the client still comes up.
-
-- [ ] **Multi-client + hot-plug** — N clients with NKMS's cycling
-  order (host → client 1 → client 2 → … → host), clients joining and
-  leaving at any time, and udev-monitor hot-plug of input devices:
-  - Port NKMS's client-removal index handling (`old/nkms` commit
-    31a289a) and its edge cases as unit tests: removing the focused
-    client, the last client, or a client before the focused one.
+- [ ] **Multi-client + hot-plug** — N clients with focus cycling,
+  clients joining and leaving at any time, and udev-monitor hot-plug of
+  input devices:
   - When devices change, re-send the unioned capabilities to clients and
     recreate their virtual device only if capabilities grew (NKMS's
     `update_capabilities`). Release a grabbed device on any exit path.
-  - Per-peer roles in config, replacing the single `km.role`.
 
   *Verification*: 3-machine test. Hot-plug a keyboard mid-session and
   confirm it works on a client without a restart. Remove the focused
   client and confirm focus moves sensibly.
 
+- [ ] **Local control channel + nioxctl** — `niox-ipc` and the
+  `nioxctl` CLI:
+  - nioxd listens on `/run/niox/niox.sock` (root-owned, group `niox`,
+    `0660`) with newline-delimited JSON, publishing focus and peer
+    status to subscribers. It never carries per-event KM data.
+  - `nioxctl status` (focus, connected peers), `nioxctl pubkey` (for
+    pairing), and `nioxctl focus <target>`. This is the parity stand-in
+    for NKMS's tray applet until the web UI exists.
+
+  *Verification*: integration tests over a temp socket. On a real
+  machine, a user in the `niox` group can run `nioxctl status`, and a
+  user outside it is refused.
+
 - [ ] **Live config + clean lifecycle** — config changes take effect
   without a manual restart (NKMS commit 463a341's behavior):
-  - `systemctl reload nioxd` (SIGHUP) re-reads config and applies
-    hotkey and peer changes, re-handshaking only where needed.
+  - `systemctl reload nioxd` (SIGHUP) and `nioxctl reload` re-read
+    config and apply hotkey and peer changes, re-handshaking only where
+    needed.
   - Start/stop cycles leak nothing: no stray uinput devices, sockets, or
     grabs.
-  - A minimal `nioxctl` CLI talking to the nioxd socket: status
-    (focus, connected peers), reload, and print-pubkey for pairing.
-    This is the parity stand-in for NKMS's tray applet until the web UI
-    exists.
 
   *Verification*: change the hotkey, reload, and confirm the new hotkey
   works while clients stay connected. Run 20 reload and stop/start
@@ -229,11 +182,10 @@ Ground rules for every port step:
   both:
   - RPM (`rpm/niox.spec`, following NKMS's) as the primary package.
     Debian packaging is kept building alongside it.
-  - A `nioxd` system unit (enabled at boot) and a `niox-session`
-    user unit, plus the `niox` group and `/etc/niox` and `/run/niox`
-    setup.
+  - A `nioxd` system unit (enabled at boot), the `niox` group, and
+    `/etc/niox` and `/run/niox` setup.
   - Fedora specifics: a firewalld service definition for niox's UDP
-    port(s), and confirm SELinux allows the system unit to access
+    port, and confirm SELinux allows the system unit to access
     `/dev/uinput` and `/dev/input/*`.
   - Upgrades preserve the config and keypair.
 
@@ -243,48 +195,55 @@ Ground rules for every port step:
 
 - [ ] ★ **Parity checkpoint: retire NKMS.** Replace NKMS with niox on
   every Linux machine and use it daily for a week. Anything NKMS did
-  that niox doesn't becomes a bug against the parity items above
-  before moving on.
+  that niox doesn't becomes a bug against the steps above before moving
+  on. Delete `archive/go/` once this passes.
 
-## After parity
+## Audio
 
-- [ ] **Control API + web UI** (`niox-control`) — HTTP status
-  (focus, peers) and control (switch focus, start/stop, edit
-  config via nioxd), LAN-reachable with token auth, usable from a
-  phone. Must work on a headless host. Decide first where the HTTP
-  server runs (see ARCHITECTURE.md open questions).
-  *Verification*: switch focus and edit a peer from a phone browser,
-  against a host with nobody logged in.
-
-- [ ] **Audio transport spike** — prove that Roc can run inside the
-  Noise transport before building on it. Roc normally owns its own UDP
-  sockets, so this means using Roc's packet-level encoder/decoder API
-  (binding `libroc`'s C API with `bindgen`, since Roc has no official
-  Rust bindings) and carrying its packets over the transport's `Conn`. If that isn't workable,
-  pick and document the alternative explicitly (e.g. Opus over our own
+- [ ] **Audio transport spike** — prove that Roc can run inside niox's
+  transport before building on it. Roc normally owns its own UDP
+  sockets, so this means binding `libroc`'s packet-level encoder/decoder
+  C API with `bindgen` (Roc has no official Rust bindings), against
+  Fedora's packaged `roc-toolkit` 0.4, and carrying its packets in the
+  transport's audio subsystem channel. If that isn't workable, pick and
+  document the alternative explicitly (e.g. Opus over our own
   transport).
   *Verification*: test tone from one Fedora machine to another,
-  encrypted, with Fedora's packaged `roc-toolkit` 0.4.
+  encrypted.
 
-- [ ] **Audio: one client → host** — capture from a dedicated
-  PipeWire null sink set as the client's default (per
+- [ ] **niox-session skeleton** — the optional user-session binary:
+  connects to nioxd's socket, subscribes to focus events, and gets the
+  config slices it needs from nioxd. Includes its `systemctl --user`
+  unit. Decide here how audio packets reach the network: through nioxd's
+  transport session, or niox-session holding its own Noise session per
+  peer (see ARCHITECTURE.md open questions).
+  *Verification*: niox-session logs focus changes; killing and
+  restarting it never affects KM.
+
+- [ ] **Audio: one client → host** — capture from a dedicated PipeWire
+  null sink set as the client's default (per
   `old/audio-switcher/CROSS_PLATFORM.md`, so it works with no speakers
-  attached), sent to the host and played to its output sink. This is
-  mostly new work: audio-switcher only reached its milestone 1.
+  attached) via `pipewire-rs`, sent to the host and played to its output
+  sink.
   *Verification*: real system audio from a client with no speakers
   plays on the host. Killing or restarting the client doesn't wedge the
   host.
 
-- [ ] **Audio: multi-client mixing + focus-follow** — one receiver
-  per client, a mixer with per-client gain (fixed at 1.0 or 0), and
+- [ ] **Audio: multi-client mixing + focus-follow** — one receiver per
+  client, a mixer with per-client gain (fixed at 1.0 or 0), and
   follow-focus vs. always-mix driven by focus events from nioxd.
   *Verification*: two clients mix cleanly. In follow-focus mode, cycling
   focus mutes and unmutes the right streams.
 
-- [ ] **Web UI: audio controls** — mute state, focus-follow toggle,
-  and per-client presence in the control web UI.
-  *Verification*: exercise KM + audio entirely from the web UI on a
-  headless host.
+## Control API + web UI
+
+- [ ] **Control API + web UI** (`niox-control`) — HTTP status (focus,
+  peers, audio state) and control (switch focus, edit config via nioxd,
+  mute, focus-follow toggle), LAN-reachable with token auth, usable from
+  a phone. Must work on a headless host. Decide first where the HTTP
+  server runs (see ARCHITECTURE.md open questions).
+  *Verification*: switch focus, edit a peer, and toggle focus-follow
+  from a phone browser, against a host with nobody logged in.
 
 ## Explicitly deferred
 

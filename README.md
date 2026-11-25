@@ -11,19 +11,24 @@ reference: `nkms` (keyboard/mouse switching) and `audio-switcher`
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
 [ROADMAP.md](ROADMAP.md) for progress.
 
-**Status:** early development. Encrypted single-client keyboard/mouse
-works on Linux in the original Go prototype, which is being ported to
-Rust (see ROADMAP.md). After the port, the goal is full Linux parity with NKMS
+**Status:** early development. niox is being built in Rust, starting
+with keyboard/mouse. The goal is full Linux parity with NKMS
 (multi-client, hot-plug, login-screen support, RPM/deb packaging) so NKMS
-can be retired. Audio and the web UI come after that.
+can be retired. Audio and the web UI come after that. An earlier Go
+prototype that reached single-client keyboard/mouse is archived in
+`archive/go/` for reference.
 
 ## Layout
 
-- `cmd/nioxd` -- privileged system service: config owner, KM capture/send/receive, virtual input
-- `cmd/niox-session` -- optional user-session binary: audio, control API, web UI
-- `internal/km`, `internal/audio`, `internal/video` -- per-subsystem logic
-- `internal/transport` -- encrypted UDP transport shared by subsystems
-- `internal/ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
-- `internal/control` -- HTTP API + web UI
-- `internal/config` -- shared TOML config
+A Cargo workspace; crates are added as the roadmap reaches them.
+
+- `crates/nioxd` -- privileged system service: config owner, KM capture/send/receive, virtual input
+- `crates/niox-session` -- optional user-session binary: audio, control API, web UI
+- `crates/nioxctl` -- CLI over the nioxd control socket
+- `crates/niox-km`, `crates/niox-audio` -- per-subsystem logic
+- `crates/niox-transport` -- encrypted UDP transport shared by subsystems
+- `crates/niox-ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
+- `crates/niox-control` -- HTTP API + web UI
+- `crates/niox-config` -- shared TOML config
 - `web/` -- control UI frontend source
+- `archive/go/` -- archived Go prototype, reference only
