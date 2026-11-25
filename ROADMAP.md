@@ -237,7 +237,9 @@ are and just get checked off; nothing moves into this section.
   config slices it needs from nioxd. Includes its `systemctl --user`
   unit. Decide here how audio packets reach the network: through nioxd's
   transport session, or niox-session holding its own Noise session per
-  peer (see ARCHITECTURE.md open questions).
+  peer (see ARCHITECTURE.md open questions). Also decide which
+  niox-session nioxd serves when more than one user is logged in (fast
+  user switching, or a lingering user plus a desktop login).
   *Verification*: niox-session logs focus changes; killing and
   restarting it never affects KM.
 
@@ -246,15 +248,31 @@ are and just get checked off; nothing moves into this section.
   `old/audio-switcher/CROSS_PLATFORM.md`, so it works with no speakers
   attached) via `pipewire-rs`, sent to the host and played to its output
   sink.
+  - The null sink lives only as long as niox-session, so if
+    niox-session crashes or stops, the client's audio falls back to its
+    real output instead of going nowhere.
+  - An `[audio]` config table (enable, mode, latency target) in
+    `niox-config`, handed to niox-session by nioxd and applied on
+    reload.
+
   *Verification*: real system audio from a client with no speakers
   plays on the host. Killing or restarting the client doesn't wedge the
-  host.
+  host. After `kill -9` of the client's niox-session, its local audio
+  plays normally again.
 
 - [ ] **Audio: multi-client mixing + focus-follow** — one receiver per
   client, a mixer with per-client gain (fixed at 1.0 or 0), and
   follow-focus vs. always-mix driven by focus events from nioxd.
   *Verification*: two clients mix cleanly. In follow-focus mode, cycling
   focus mutes and unmutes the right streams.
+
+- [ ] **Audio packaging** — niox-session and its user unit in the RPM
+  and `.deb`. libroc becomes a runtime dependency, so put niox-session
+  in its own subpackage and keep KM-only installs free of
+  `roc-toolkit`. Document enabling it under a lingering user on a
+  headless host.
+  *Verification*: on fresh Fedora and Debian installs, audio works
+  after a reboot and login. A KM-only install doesn't pull in libroc.
 
 ## Control API + web UI
 
