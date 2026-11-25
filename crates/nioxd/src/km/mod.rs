@@ -14,12 +14,13 @@
 mod client;
 mod host;
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Context as _;
 use niox_config::{Config, Role};
-use niox_km::Message;
+use niox_ipc::{self as ipc, Publisher};
 use niox_km::device::Stop;
+use niox_km::{Message, Target};
 use niox_transport::{Endpoint, EndpointConfig, Event, Handle, PeerId, SendError, Subsystem};
 use tracing::{debug, error, info};
 
@@ -29,13 +30,15 @@ use tracing::{debug, error, info};
 pub struct Km {
     endpoint: Option<Endpoint>,
     host: Option<host::Host>,
+    roles: Vec<Role>,
 }
 
 impl Km {
     /// Starts the transport and, if any peer is a client, grabs the local
-    /// keyboards and mice. Everything stops when `stop` triggers and
-    /// [`Km::shutdown`] runs.
-    pub fn start(config: &Config, stop: &Stop) -> anyhow::Result<Self> {
+    /// keyboards and mice. Focus and peer changes are published to
+    /// `publisher`, whose status must list the peers in config order.
+    /// Everything stops when `stop` triggers and [`Km::shutdown`] runs.
+    pub fn start(config: &Config, stop: &Stop, publisher: &Publisher) -> anyhow::Result<Self> {
         let roles: Vec<Role> = config.peers.iter().map(|p| p.role).collect();
         let clients: Vec<PeerId> = roles
             .iter()
@@ -47,10 +50,15 @@ impl Km {
         let mut host = if clients.is_empty() {
             None
         } else {
-            Some(host::Host::new(config.km.hotkey, clients)?)
+            Some(host::Host::new(
+                config.km.hotkey,
+                clients,
+                publisher.clone(),
+            )?)
         };
         let host_state = host.as_ref().map(host::Host::state);
         let mut hosts = client::Hosts::new(&roles);
+        let (handler_roles, publisher) = (roles.clone(), publisher.clone());
 
         let socket = Endpoint::bind(config.transport.port)
             .with_context(|| format!("binding UDP port {}", config.transport.port))?;
@@ -66,15 +74,35 @@ impl Km {
                 {
                     return;
                 }
-                match roles.get(peer.index()) {
-                    Some(Role::Client) => {
+                let Some(&role) = handler_roles.get(peer.index()) else {
+                    return;
+                };
+                match role {
+                    Role::Client => {
                         if let Some(state) = &host_state {
                             host::on_event(state, handle, event);
                         }
                     }
-                    Some(Role::Host) => hosts.on_event(handle, event),
-                    None => {}
+                    Role::Host => hosts.on_event(handle, event),
                 }
+                // Data from a host is input frames, which change nothing
+                // here; from a client it may be the acknowledgment that
+                // makes it ready.
+                let connected = match event {
+                    Event::Up(_) => Some(true),
+                    Event::Down(_) => Some(false),
+                    Event::Data { .. } if role == Role::Client => None,
+                    Event::Data { .. } => return,
+                };
+                let ready = host_state.as_ref().is_some_and(|s| lock(s).is_ready(peer));
+                publisher.update(|s| {
+                    if let Some(p) = s.peers.get_mut(peer.index()) {
+                        if let Some(connected) = connected {
+                            p.connected = connected;
+                        }
+                        p.in_focus_cycle = ready;
+                    }
+                });
             },
         )
         .context("starting the transport")?;
@@ -86,7 +114,17 @@ impl Km {
         Ok(Self {
             endpoint: Some(endpoint),
             host,
+            roles,
         })
+    }
+
+    /// Serves control requests (e.g. `nioxctl focus`).
+    pub fn control(&self) -> Control {
+        Control {
+            host: self.host.as_ref().map(host::Host::state),
+            handle: self.endpoint.as_ref().map(Endpoint::handle),
+            roles: self.roles.clone(),
+        }
     }
 
     /// Stops KM once `stop` has triggered: the capture threads finish
@@ -99,6 +137,37 @@ impl Km {
         // The transport's handler owns the client-side virtual devices;
         // destroying them releases anything still held.
         drop(self.endpoint.take());
+    }
+}
+
+/// Carries out control requests against running KM.
+#[derive(Debug)]
+pub struct Control {
+    host: Option<Arc<Mutex<host::State>>>,
+    handle: Option<Handle>,
+    roles: Vec<Role>,
+}
+
+impl ipc::Handler for Control {
+    fn focus(&self, target: &ipc::Target) -> Result<(), String> {
+        let (Some(state), Some(handle)) = (&self.host, &self.handle) else {
+            return Err("this machine hosts no clients".into());
+        };
+        let km_target = match target {
+            ipc::Target::Host => Target::Host,
+            ipc::Target::Client(name) => match handle.peer_id(name) {
+                Some(peer) if self.roles.get(peer.index()) == Some(&Role::Client) => {
+                    Target::Client(peer)
+                }
+                _ => return Err(format!("no client named {name:?}")),
+            },
+        };
+        host::set_focus(state, handle, km_target).map_err(|_| match target {
+            ipc::Target::Client(name) => {
+                format!("client {name:?} isn't connected and ready for input")
+            }
+            ipc::Target::Host => "the host can't take focus".into(),
+        })
     }
 }
 

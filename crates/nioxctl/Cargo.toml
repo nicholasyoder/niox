@@ -1,0 +1,16 @@
+[package]
+name = "nioxctl"
+description = "Command-line control of nioxd over its local socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive"] }
+niox-ipc.workspace = true
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

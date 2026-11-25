@@ -143,7 +143,26 @@ user session.
 - Protocol: newline-delimited JSON, matching the style NKMS already uses
   for its network protocol. Message volume is low (focus changes, config
   reloads, status) so there's no reason to reach for a binary format or
-  protobuf here.
+  protobuf here. Details are in `niox_ipc::protocol`:
+  - Requests carry a `cmd` (`status`, `focus`, `subscribe`), and each
+    gets exactly one reply, in order (`status`, `ok`, or `error` with a
+    message).
+  - `subscribe` replies with a status snapshot, then sends an `event`
+    line for every change: `focus` (where focus moved), `peer` (one
+    peer's new status), or `status` (the full status, when something
+    structural such as the peer list changed). Events and replies share
+    the connection; anything that isn't an `event` is a reply. A focus
+    target is `"host"` or `{"client": "<name>"}`.
+  - Readers ignore fields they don't know, so fields can be added freely;
+    the status carries a protocol version for breaking changes.
+- nioxd mirrors its status in a `niox_ipc::Publisher` and updates it as
+  things happen; the socket answers from that mirror and turns its
+  changes into events, so serving it never takes the KM locks. Publishing
+  never blocks: a subscriber that falls behind is disconnected. The
+  socket is bound under a temporary name and renamed into place once its
+  group and mode are set. If the `niox` group doesn't exist it's
+  root-only, and if the socket can't be served at all nioxd logs it and
+  runs KM anyway.
 - **Never carries per-event KM data.** If a future change would put
   individual mouse/key events on this channel, that's a sign the design
   has drifted from the "hot path stays inside the privileged process"
@@ -297,7 +316,7 @@ niox/
   crates/
     nioxd/             # bin: privileged system service — config owner, KM capture/send/receive/uinput
     niox-session/      # bin: user-session process — audio, control API, web UI
-    nioxctl/           # bin: CLI over the nioxd socket (status, reload, pubkey)
+    nioxctl/           # bin: CLI over the nioxd socket (status, pubkey, focus, watch)
     niox-km/           # evdev/uinput capture + virtual input, hotkey/focus logic
     niox-audio/        # capture, Roc encode/decode, mixer, focus-follow logic
     niox-transport/    # Noise handshake + AEAD-wrapped UDP, shared by subsystems
@@ -419,5 +438,4 @@ once it has a design.
   niox-session. Either niox-session hands Roc packets to nioxd over a
   local socket (one Noise session per peer, but an extra hop for audio),
   or it gets its own Noise session per peer (needs a key it can use).
-- Exact focus-event schema between nioxd and the audio mixer.
 - Web UI auth mechanism specifics (static token vs. session login).

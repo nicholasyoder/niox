@@ -169,7 +169,7 @@ are and just get checked off; nothing moves into this section.
   confirm it works on a client without a restart. Remove the focused
   client and confirm focus moves sensibly.
 
-- [ ] **Local control channel + nioxctl** — `niox-ipc` and the
+- [x] **Local control channel + nioxctl** — `niox-ipc` and the
   `nioxctl` CLI:
   - nioxd listens on `/run/niox/niox.sock` (root-owned, group `niox`,
     `0660`) with newline-delimited JSON, publishing focus and peer

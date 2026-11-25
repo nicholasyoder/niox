@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 niox-config = { path = "crates/niox-config" }
+niox-ipc = { path = "crates/niox-ipc" }
 niox-km = { path = "crates/niox-km" }
 niox-transport = { path = "crates/niox-transport" }
 

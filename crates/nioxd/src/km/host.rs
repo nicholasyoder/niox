@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use niox_config::Hotkey;
+use niox_ipc::{self as ipc, Publisher};
 use niox_km::device::{
     Capture, CaptureEnd, InputDevice, Monitor, MonitorEvent, Stop, VirtualDevice, discover,
     union_capabilities,
 };
-use niox_km::{Capabilities, HostKm, HostOutput, Message, Target};
+use niox_km::{Capabilities, HostKm, HostOutput, Message, Target, Unavailable};
 use niox_transport::{Event, Handle, PeerId};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
@@ -40,6 +41,7 @@ pub struct State {
     local: Option<VirtualDevice>,
     out: Vec<HostOutput<PeerId>>,
     buf: Vec<u8>,
+    publisher: Publisher,
 }
 
 impl State {
@@ -63,9 +65,16 @@ impl State {
                 HostOutput::Send { peer, message } => {
                     send(handle, &mut self.buf, peer, &message);
                 }
-                HostOutput::Focus(Target::Host) => info!(focus = "host", "focus moved"),
-                HostOutput::Focus(Target::Client(peer)) => {
-                    info!(focus = handle.peer_name(peer), "focus moved");
+                HostOutput::Focus(target) => {
+                    let target = match target {
+                        Target::Host => ipc::Target::Host,
+                        Target::Client(peer) => ipc::Target::Client(handle.peer_name(peer).into()),
+                    };
+                    match &target {
+                        ipc::Target::Host => info!(focus = "host", "focus moved"),
+                        ipc::Target::Client(name) => info!(focus = name, "focus moved"),
+                    }
+                    self.publisher.update(|s| s.focus = Some(target));
                 }
             }
         }
@@ -108,9 +117,20 @@ impl State {
         true
     }
 
-    fn is_ready(&self, peer: PeerId) -> bool {
+    pub fn is_ready(&self, peer: PeerId) -> bool {
         self.km.ready_clients().any(|p| p == peer)
     }
+}
+
+/// Moves focus on a control request. Errors are for the requester.
+pub fn set_focus(
+    state: &Mutex<State>,
+    handle: &Handle,
+    target: Target<PeerId>,
+) -> Result<(), Unavailable> {
+    let mut result = Ok(());
+    lock(state).step(handle, |km, out| result = km.set_focus(target, out));
+    result
 }
 
 /// Handles a transport event for a peer whose role is `client`.
@@ -165,7 +185,7 @@ impl Host {
     /// Finds the local keyboards and mice and creates the passthrough
     /// device, without grabbing anything yet. Having none is fine: they're
     /// picked up when plugged in.
-    pub fn new(hotkey: Hotkey, clients: Vec<PeerId>) -> anyhow::Result<Self> {
+    pub fn new(hotkey: Hotkey, clients: Vec<PeerId>, publisher: Publisher) -> anyhow::Result<Self> {
         // Watch before scanning, so nothing plugged in between is missed.
         let monitor = match Monitor::open() {
             Ok(m) => Some(m),
@@ -197,6 +217,7 @@ impl Host {
                 local,
                 out: Vec::new(),
                 buf: Vec::new(),
+                publisher,
             })),
             startup: Some((monitor, devices)),
             handle: None,

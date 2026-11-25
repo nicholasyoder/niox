@@ -14,6 +14,9 @@ Before=display-manager.service
 [Service]
 Type=exec
 ExecStart=/usr/local/bin/nioxd
+# /run/niox, for the control socket (/run/niox/niox.sock).
+RuntimeDirectory=niox
+RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=1
 

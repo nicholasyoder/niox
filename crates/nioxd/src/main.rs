@@ -6,6 +6,9 @@
 //! and mice and sending them to the focused client), and as a client of
 //! peers with role `host` (playing what they send into a virtual device).
 //! It needs no user session, so it works at the login screen.
+//!
+//! It also serves the local control socket (`/run/niox/niox.sock`), which
+//! reports focus and peer status and takes control requests from nioxctl.
 
 mod km;
 
@@ -17,6 +20,9 @@ use std::thread;
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
+use niox_config::{Config, Role};
+use niox_ipc::protocol::PROTOCOL_VERSION;
+use niox_ipc::{self as ipc, PeerStatus, Publisher, Server, Status};
 use niox_km::device::Stop;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -31,6 +37,10 @@ struct Args {
     /// unprivileged against a local file during development.
     #[arg(long, value_name = "PATH", default_value = niox_config::DEFAULT_PATH)]
     config: PathBuf,
+
+    /// Control socket to listen on instead of /run/niox/niox.sock.
+    #[arg(long, value_name = "PATH", default_value = niox_ipc::DEFAULT_SOCKET)]
+    socket: PathBuf,
 }
 
 fn main() -> ExitCode {
@@ -91,9 +101,26 @@ fn run(args: Args) -> anyhow::Result<()> {
             .context("spawning the signal thread")?;
     }
 
-    let km = km::Km::start(config, &stop)?;
+    let publisher = Publisher::new(initial_status(config));
+    let km = km::Km::start(config, &stop, &publisher)?;
+    // KM never depends on the control socket: if it can't be served,
+    // say so and carry on.
+    let control = match Server::start(&args.socket, socket_group(), publisher, km.control()) {
+        Ok(server) => {
+            info!(path = %args.socket.display(), "control socket listening");
+            Some(server)
+        }
+        Err(e) => {
+            error!(
+                "{:#}",
+                anyhow::Error::from(e).context("control socket unavailable (nioxctl won't work)")
+            );
+            None
+        }
+    };
     info!("running");
     stop.wait();
+    drop(control);
     km.shutdown();
 
     if !signaled.load(Ordering::SeqCst) {
@@ -101,6 +128,58 @@ fn run(args: Args) -> anyhow::Result<()> {
     }
     info!("stopped");
     Ok(())
+}
+
+/// The status the control socket reports before anything has happened.
+fn initial_status(config: &Config) -> Status {
+    let role = |r| match r {
+        Role::Host => ipc::Role::Host,
+        Role::Client => ipc::Role::Client,
+    };
+    Status {
+        version: env!("CARGO_PKG_VERSION").into(),
+        protocol: PROTOCOL_VERSION,
+        public_key: config.identity.public_key.to_string(),
+        port: config.transport.port,
+        focus: config
+            .peers
+            .iter()
+            .any(|p| p.role == Role::Client)
+            .then_some(ipc::Target::Host),
+        peers: config
+            .peers
+            .iter()
+            .map(|p| PeerStatus {
+                name: p.name.clone(),
+                address: p.address.to_string(),
+                role: role(p.role),
+                connected: false,
+                in_focus_cycle: false,
+            })
+            .collect(),
+    }
+}
+
+/// The group the control socket is shared with: `niox` if it exists,
+/// otherwise nobody but root.
+fn socket_group() -> Option<u32> {
+    match niox_ipc::lookup_group(niox_ipc::GROUP) {
+        Ok(Some(gid)) => Some(gid),
+        Ok(None) => {
+            warn!(
+                "no {:?} group; the control socket is limited to its owner (root under systemd)",
+                niox_ipc::GROUP
+            );
+            None
+        }
+        Err(e) => {
+            warn!(
+                "looking up the {:?} group: {e}; the control socket is limited to its owner (root under systemd)",
+                niox_ipc::GROUP
+            );
+            None
+        }
+    }
 }
 
 /// Logs to the journal when running under systemd (which sets
