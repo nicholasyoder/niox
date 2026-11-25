@@ -29,7 +29,10 @@ macOS is deferred (see below).
   nioxd owning its config, and a transport that recovers on its own. No
   step should knowingly build something a later step has to tear out.
 
-## Done
+## Groundwork
+
+Work that predates this roadmap. Completed steps below stay where they
+are and just get checked off; nothing moves into this section.
 
 - [x] **Go prototype** — config, a Noise KK transport spike, local IPC,
   and single-client KM over the encrypted transport, built in Go.
