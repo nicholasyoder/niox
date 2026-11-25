@@ -221,7 +221,7 @@ are and just get checked off; nothing moves into this section.
 
 ## Audio
 
-- [ ] **Audio transport spike** — prove that Roc can run inside niox's
+- [x] **Audio transport spike** — prove that Roc can run inside niox's
   transport before building on it. Roc normally owns its own UDP
   sockets, so this means binding `libroc`'s packet-level encoder/decoder
   C API with `bindgen` (Roc has no official Rust bindings), against

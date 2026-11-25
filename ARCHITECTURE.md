@@ -174,8 +174,7 @@ user session.
   stale mouse-move should never be retransmitted). Audio uses Roc
   (FEC, clock-drift correction) for encoding/decoding, with its packets
   carried over niox's own encrypted transport rather than Roc's built-in
-  sockets (feasibility to be proven by the "Audio transport spike" step
-  in ROADMAP.md). Video, when
+  sockets (see "Audio protocol" below). Video, when
   it exists, will pick per-platform based on capture/encode constraints.
 - **Encryption/auth**: a Noise protocol handshake (via a vetted library,
   `snow` — not hand-rolled crypto primitives) performed per
@@ -285,6 +284,38 @@ user session.
     cleans up. Within a running process, device threads share a
     `Stop`; a guard triggers it if a thread panics, so a panic never
     leaves other threads holding grabs with nothing replaying them.
+- **Audio protocol** (`niox-audio`; the Roc bindings are `niox-roc`):
+  - *Roc without its sockets.* Roc 0.4's networkless pipeline
+    (`roc_sender_encoder` / `roc_receiver_decoder`), bound with bindgen
+    against the system libroc (Fedora's `roc-toolkit`), does everything
+    but the network: packetizing, FEC, resampling, clock-drift
+    compensation, loss concealment, and latency tuning. Its packets
+    travel as `Subsystem::Audio` bodies, so audio gets the transport's
+    authentication, encryption, liveness, and re-handshakes, with no
+    second socket or key.
+  - *Framing.* Each body is one Roc packet behind a channel byte: source,
+    repair (FEC), report (the sender's RTCP), or feedback (the
+    receiver's RTCP). RTCP flows both ways on one Roc interface, so the
+    byte also says which end of the stream a packet is for. niox adds no
+    ordering or retransmission of its own; Roc's RTP sequence numbers,
+    jitter buffer, and FEC deal with loss and reordering.
+  - *Format.* Frames are 32-bit float at any rate; on the wire Roc uses
+    its built-in 16-bit PCM at 44.1 kHz and converts both ways. A packet
+    must fit one datagram (1246 bytes after the channel byte), which
+    caps a stereo packet at about 6.7ms of audio; the default is 5ms
+    (902-byte packets). libroc silently drops packets bigger than its
+    context's maximum, so an encoder whose packets could exceed it is
+    refused up front.
+  - *FEC and latency.* Reed-Solomon FEC by default (Roc's 18 source + 10
+    repair packets per block). Repairs arrive at the end of a block, so
+    the receiver's latency target has to cover one block (90ms at 5ms
+    packets) for FEC to help; Roc's default 200ms does.
+  - *Restarts.* A restarted sender starts a new RTP stream; the decoder
+    drops the old session about 200ms after it goes quiet and picks up
+    the new one by itself.
+  - On the test VMs, a stereo stream with default FEC measures about
+    198ms end to end at Roc's default latency target, and about 317
+    datagrams/s (2.4 Mbit/s).
 - **Reloading** (`SIGHUP`, i.e. `systemctl reload nioxd`, or `nioxctl
   reload`). nioxd re-reads its config; an invalid one is refused and the
   running config kept. Otherwise the change is applied in place:
@@ -344,6 +375,7 @@ niox/
     nioxctl/           # bin: CLI over the nioxd socket (status, pubkey, focus, reload, watch)
     niox-km/           # evdev/uinput capture + virtual input, hotkey/focus logic
     niox-audio/        # capture, Roc encode/decode, mixer, focus-follow logic
+    niox-roc/          # bindgen bindings to libroc's encoder/decoder (the only FFI crate)
     niox-transport/    # Noise handshake + AEAD-wrapped UDP, shared by subsystems
     niox-ipc/          # UDS control channel (nioxd <-> niox-session/nioxctl)
     niox-control/      # HTTP API + web UI (assets embedded in the binary)
@@ -382,6 +414,11 @@ once it has a design.
   guards are what release evdev grabs and uinput devices on panic.
   `rust-toolchain.toml` pins Fedora's packaged rustc so local and RPM
   builds match, and `Cargo.lock` is committed.
+- **System libraries**: `niox-roc` links the system libroc 0.4 (found
+  with pkg-config) and generates its bindings at build time, so building
+  the workspace needs `roc-toolkit-devel` and `clang-devel` (Debian:
+  `libroc-dev`, `libclang-dev`). Only crates that use audio link it;
+  nioxd's KM doesn't.
 
 ## Config
 

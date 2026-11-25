@@ -1,0 +1,25 @@
+[package]
+name = "niox-audio"
+description = "niox audio subsystem: Roc streams carried over the encrypted transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+niox-roc.workspace = true
+niox-transport.workspace = true
+thiserror = "2.0.21"
+
+[dev-dependencies]
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive"] }
+hound = "3.5.1"
+niox-config.workspace = true
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

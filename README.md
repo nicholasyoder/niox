@@ -26,12 +26,19 @@ A Cargo workspace; crates are added as the roadmap reaches them.
 - `crates/niox-session` -- optional user-session binary: audio, control API, web UI
 - `crates/nioxctl` -- CLI over the nioxd control socket
 - `crates/niox-km`, `crates/niox-audio` -- per-subsystem logic
+- `crates/niox-roc` -- bindings to libroc (Roc's audio encoder/decoder)
 - `crates/niox-transport` -- encrypted UDP transport shared by subsystems
 - `crates/niox-ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
 - `crates/niox-control` -- HTTP API + web UI
 - `crates/niox-config` -- shared TOML config
 - `web/` -- control UI frontend source
 - `archive/go/` -- archived Go prototype, reference only
+
+## Development
+
+`cargo test` across the workspace needs libroc and libclang, for the
+audio crates: `sudo dnf install roc-toolkit-devel clang-devel` (Debian:
+`libroc-dev libclang-dev`).
 
 ## Building and installing
 

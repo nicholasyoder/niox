@@ -14,6 +14,7 @@ repository = "https://github.com/nicholasyoder/niox"
 niox-config = { path = "crates/niox-config" }
 niox-ipc = { path = "crates/niox-ipc" }
 niox-km = { path = "crates/niox-km" }
+niox-roc = { path = "crates/niox-roc" }
 niox-transport = { path = "crates/niox-transport" }
 
 [workspace.lints.rust]

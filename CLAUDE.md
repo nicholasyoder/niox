@@ -16,7 +16,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The toolchain is pinned to Fedora's rustc (`rust-toolchain.toml`). Bump it
+Building the workspace needs `roc-toolkit-devel` and `clang-devel`
+(libroc for `niox-roc`, libclang for its bindgen). The toolchain is pinned to Fedora's rustc (`rust-toolchain.toml`). Bump it
 only together with Fedora's rust package. Workspace lints deny `unsafe` (opt
 in per crate for FFI) and warn on `unwrap`, `print*`, `dbg!`, and `todo!`
 outside tests.

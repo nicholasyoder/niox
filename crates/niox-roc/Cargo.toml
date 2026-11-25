@@ -1,0 +1,21 @@
+[package]
+name = "niox-roc"
+description = "Safe bindings to libroc's networkless sender encoder and receiver decoder (Roc 0.4)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "roc"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0.21"
+tracing = "0.1.44"
+
+[build-dependencies]
+bindgen = "0.73.2"
+pkg-config = "0.3.34"
