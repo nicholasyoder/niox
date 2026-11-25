@@ -26,7 +26,7 @@ type HostConfig struct {
 
 	// Hotkey codes are plain evdev key codes (e.g. 125 for KEY_LEFTMETA),
 	// kept as uint16 here rather than evdev.EvCode so callers outside this
-	// package (cmd/niox-helper) don't need to import the evdev package
+	// package (cmd/nioxd) don't need to import the evdev package
 	// just to build a HostConfig. HotkeySecondary == 0 means "no
 	// secondary key configured".
 	HotkeyPrimary   uint16

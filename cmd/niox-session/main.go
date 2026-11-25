@@ -1,6 +1,6 @@
-// Command niox-daemon is the user-session process responsible for audio,
+// Command niox-session is the user-session process responsible for audio,
 // the focus event bus, and the HTTP control API / web UI.
-// See ARCHITECTURE.md for its role relative to niox-helper.
+// See ARCHITECTURE.md for its role relative to nioxd.
 package main
 
 import (
@@ -35,17 +35,17 @@ func defaultSocketPath() string {
 
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "path to niox config file")
-	socketPath := flag.String("socket", defaultSocketPath(), "path to the niox-helper control socket")
+	socketPath := flag.String("socket", defaultSocketPath(), "path to the nioxd control socket")
 	printConfig := flag.Bool("print-config", false, "load (or create) the config file and print it, then exit")
 	flag.Parse()
 
 	if err := os.MkdirAll(filepath.Dir(*configPath), 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "niox-session: %v\n", err)
 		os.Exit(1)
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "niox-session: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -58,14 +58,14 @@ func main() {
 	}
 
 	if err := serve(*socketPath, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "niox-daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "niox-session: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 // serve listens on the control socket and, per connection, answers pings,
-// answers MessageTypeHello with the KM config niox-helper needs to run its
-// hot path (see ARCHITECTURE.md -- niox-helper never reads the TOML file
+// answers MessageTypeHello with the KM config nioxd needs to run its
+// hot path (see ARCHITECTURE.md -- nioxd never reads the TOML file
 // itself), and logs MessageTypeFocus updates, until interrupted.
 func serve(socketPath string, cfg *config.Config) error {
 	ln, err := ipc.Listen(socketPath)
@@ -73,7 +73,7 @@ func serve(socketPath string, cfg *config.Config) error {
 		return err
 	}
 	defer ln.Close()
-	fmt.Printf("niox-daemon: listening on %s\n", socketPath)
+	fmt.Printf("niox-session: listening on %s\n", socketPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -101,7 +101,7 @@ func handleConn(conn *ipc.Conn, cfg *config.Config) {
 		msg, err := conn.Recv()
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				fmt.Fprintf(os.Stderr, "niox-daemon: recv from %s: %v\n", conn.RemoteAddr(), err)
+				fmt.Fprintf(os.Stderr, "niox-session: recv from %s: %v\n", conn.RemoteAddr(), err)
 			}
 			return
 		}
@@ -119,15 +119,15 @@ func handleConn(conn *ipc.Conn, cfg *config.Config) {
 				HotkeySecondary: cfg.KM.HotkeySecondary,
 			}}
 		case ipc.MessageTypeFocus:
-			fmt.Printf("niox-daemon: focus changed to %q\n", msg.Focus)
+			fmt.Printf("niox-session: focus changed to %q\n", msg.Focus)
 			continue
 		default:
-			fmt.Fprintf(os.Stderr, "niox-daemon: unexpected message type %q\n", msg.Type)
+			fmt.Fprintf(os.Stderr, "niox-session: unexpected message type %q\n", msg.Type)
 			return
 		}
 
 		if err := conn.Send(reply); err != nil {
-			fmt.Fprintf(os.Stderr, "niox-daemon: send to %s: %v\n", conn.RemoteAddr(), err)
+			fmt.Fprintf(os.Stderr, "niox-session: send to %s: %v\n", conn.RemoteAddr(), err)
 			return
 		}
 	}

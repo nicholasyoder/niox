@@ -1,6 +1,6 @@
-// Command niox-helper is the privileged process responsible for
+// Command nioxd is the privileged process responsible for
 // keyboard/mouse capture, virtual input, and the KM network hot path.
-// See ARCHITECTURE.md for its role relative to niox-daemon.
+// See ARCHITECTURE.md for its role relative to niox-session.
 package main
 
 import (
@@ -25,17 +25,17 @@ func defaultSocketPath() string {
 }
 
 func main() {
-	socketPath := flag.String("socket", defaultSocketPath(), "path to the niox-daemon control socket")
+	socketPath := flag.String("socket", defaultSocketPath(), "path to the niox-session control socket")
 	flag.Parse()
 
 	if err := run(*socketPath); err != nil {
-		fmt.Fprintf(os.Stderr, "niox-helper: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nioxd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// run connects to niox-daemon, fetches this machine's KM config over IPC
-// (niox-helper never reads the TOML file itself -- see ARCHITECTURE.md),
+// run connects to niox-session, fetches this machine's KM config over IPC
+// (nioxd never reads the TOML file itself -- see ARCHITECTURE.md),
 // and runs the KM hot path as a host or client per the fetched role.
 func run(socketPath string) error {
 	conn, err := ipc.Dial(socketPath)
@@ -49,7 +49,7 @@ func run(socketPath string) error {
 		return err
 	}
 	if len(cfg.Peers) == 0 {
-		return fmt.Errorf("niox-helper: no peers configured")
+		return fmt.Errorf("nioxd: no peers configured")
 	}
 	peer := cfg.Peers[0] // milestone 4 is single-client; see ROADMAP.md milestone 5.
 
@@ -58,7 +58,7 @@ func run(socketPath string) error {
 
 	switch cfg.Role {
 	case "host":
-		fmt.Printf("niox-helper: starting as host, driving %s (%s)\n", peer.Name, peer.Address)
+		fmt.Printf("nioxd: starting as host, driving %s (%s)\n", peer.Name, peer.Address)
 		return km.RunHost(ctx, km.HostConfig{
 			Identity:        cfg.Identity,
 			Peer:            peer,
@@ -67,17 +67,17 @@ func run(socketPath string) error {
 			OnFocusChange:   func(f km.Focus) { reportFocus(conn, f, peer) },
 		})
 	case "client":
-		fmt.Printf("niox-helper: starting as client, accepting from %s\n", peer.Name)
+		fmt.Printf("nioxd: starting as client, accepting from %s\n", peer.Name)
 		return km.RunClient(ctx, km.ClientConfig{
 			Identity: cfg.Identity,
 			Peer:     peer,
 		})
 	default:
-		return fmt.Errorf("niox-helper: unknown km role %q (want \"host\" or \"client\")", cfg.Role)
+		return fmt.Errorf("nioxd: unknown km role %q (want \"host\" or \"client\")", cfg.Role)
 	}
 }
 
-// fetchConfig asks niox-daemon for this machine's KM config.
+// fetchConfig asks niox-session for this machine's KM config.
 func fetchConfig(conn *ipc.Conn) (*ipc.KMConfig, error) {
 	if err := conn.Send(ipc.Message{Type: ipc.MessageTypeHello}); err != nil {
 		return nil, err
@@ -87,18 +87,18 @@ func fetchConfig(conn *ipc.Conn) (*ipc.KMConfig, error) {
 		return nil, err
 	}
 	if reply.Type != ipc.MessageTypeConfig || reply.Config == nil {
-		return nil, fmt.Errorf("niox-helper: unexpected reply to hello: %+v", reply)
+		return nil, fmt.Errorf("nioxd: unexpected reply to hello: %+v", reply)
 	}
 	return reply.Config, nil
 }
 
-// reportFocus sends a best-effort MessageTypeFocus update to niox-daemon.
+// reportFocus sends a best-effort MessageTypeFocus update to niox-session.
 func reportFocus(conn *ipc.Conn, f km.Focus, peer config.Peer) {
 	target := peer.Name
 	if f == km.FocusHost {
 		target = "host"
 	}
 	if err := conn.Send(ipc.Message{Type: ipc.MessageTypeFocus, Focus: target}); err != nil {
-		fmt.Fprintf(os.Stderr, "niox-helper: report focus: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nioxd: report focus: %v\n", err)
 	}
 }

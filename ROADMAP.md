@@ -29,27 +29,27 @@ macOS is deferred (see below).
 
 - [x] **4. KM end-to-end, single client** (`internal/km`) — evdev
   capture, hotkey/focus switching, and uinput playback ported from NKMS,
-  running over the encrypted transport. In this milestone niox-helper
-  takes its config from niox-daemon over IPC, which milestone 5 reverses.
+  running over the encrypted transport. In this milestone nioxd
+  takes its config from niox-session over IPC, which milestone 5 reverses.
 
 ## Road to NKMS parity (Linux)
 
-- [ ] **5. Helper independence** — make `niox-helper` a standalone
+- [ ] **5. nioxd independence** — make `nioxd` a standalone
   system service that works with no user logged in (login screen,
   headless host), per ARCHITECTURE.md's privilege model:
-  - The helper reads its own root-owned config
+  - nioxd reads its own root-owned config
     (`/etc/niox/niox.toml`, `0600`), which holds the identity keypair,
-    peers, and KM settings. It no longer depends on niox-daemon to start.
-  - The IPC direction flips: the helper listens on
+    peers, and KM settings. It no longer depends on niox-session to start.
+  - The IPC direction flips: nioxd listens on
     `/run/niox/niox.sock` (root-owned, group `niox`, `0660`) and
-    niox-daemon connects to it as an optional client. Daemon-side
+    niox-session connects to it as an optional client. Session-side
     requests that change config (from the future web UI) go through the
-    helper, which owns the file.
-  - KM keeps working if the daemon is absent, crashes, or restarts.
+    nioxd, which owns the file.
+  - KM keeps working if niox-session is absent, crashes, or restarts.
 
   *Verification*: on a client sitting at the GDM login screen, type the
   password from the host and log in. On a host with nobody logged in,
-  drive a client. Kill and restart niox-daemon and confirm KM is
+  drive a client. Kill and restart niox-session and confirm KM is
   unaffected.
 
 - [ ] **6. KM hardening** — the robustness NKMS earned the hard way, done
@@ -89,11 +89,11 @@ macOS is deferred (see below).
 
 - [ ] **8. Live config + clean lifecycle** — config changes take effect
   without a manual restart (NKMS commit 463a341's behavior):
-  - `systemctl reload niox-helper` (SIGHUP) re-reads config and applies
+  - `systemctl reload nioxd` (SIGHUP) re-reads config and applies
     hotkey and peer changes, re-handshaking only where needed.
   - Start/stop cycles leak nothing: no stray uinput devices, sockets, or
     grabs.
-  - A minimal `nioxctl` CLI talking to the helper socket: status
+  - A minimal `nioxctl` CLI talking to the nioxd socket: status
     (focus, connected peers), reload, and print-pubkey for pairing.
     This is the parity stand-in for NKMS's tray applet until the web UI
     exists.
@@ -107,7 +107,7 @@ macOS is deferred (see below).
   both:
   - RPM (`rpm/niox.spec`, following NKMS's) as the primary package.
     Debian packaging is kept building alongside it.
-  - A `niox-helper` system unit (enabled at boot) and a `niox-daemon`
+  - A `nioxd` system unit (enabled at boot) and a `niox-session`
     user unit, plus the `niox` group and `/etc/niox` and `/run/niox`
     setup.
   - Fedora specifics: a firewalld service definition for niox's UDP
@@ -128,7 +128,7 @@ macOS is deferred (see below).
 
 - [ ] **10. Control API + web UI** (`internal/control`) — HTTP status
   (focus, peers) and control (switch focus, start/stop, edit
-  config via the helper), LAN-reachable with token auth, usable from a
+  config via nioxd), LAN-reachable with token auth, usable from a
   phone. Must work on a headless host. Decide first where the HTTP
   server runs (see ARCHITECTURE.md open questions).
   *Verification*: switch focus and edit a peer from a phone browser,
@@ -155,7 +155,7 @@ macOS is deferred (see below).
 
 - [ ] **13. Audio: multi-client mixing + focus-follow** — one receiver
   per client, a mixer with per-client gain (fixed at 1.0 or 0), and
-  follow-focus vs. always-mix driven by focus events from the helper.
+  follow-focus vs. always-mix driven by focus events from nioxd.
   *Verification*: two clients mix cleanly. In follow-focus mode, cycling
   focus mutes and unmutes the right streams.
 
@@ -172,7 +172,7 @@ Tracked as future work, not scheduled into the milestones above:
   a working macOS client to port (`old/nkms/nkms/core/virtual_input_macos.py`:
   Quartz event posting, drag and double-click handling, and
   multi-display edge clamping, plus a LaunchAgent and menu-bar applet).
-  macOS doesn't fit the Linux root-helper/user-daemon split. It would be
+  macOS doesn't fit the Linux root-service/user-session split. It would be
   a single user-level process with the Accessibility permission.
 - Video/graphics subsystem (needs its own design pass first — capture
   API, encode, latency budget).

@@ -18,11 +18,11 @@ can be retired. Audio and the web UI come after that.
 
 ## Layout
 
-- `cmd/niox-helper` -- privileged system service: config owner, KM capture/send/receive, virtual input
-- `cmd/niox-daemon` -- optional user-session binary: audio, control API, web UI
+- `cmd/nioxd` -- privileged system service: config owner, KM capture/send/receive, virtual input
+- `cmd/niox-session` -- optional user-session binary: audio, control API, web UI
 - `internal/km`, `internal/audio`, `internal/video` -- per-subsystem logic
 - `internal/transport` -- encrypted UDP transport shared by subsystems
-- `internal/ipc` -- local control channel (helper listens; daemon and CLI connect)
+- `internal/ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
 - `internal/control` -- HTTP API + web UI
 - `internal/config` -- shared TOML config
 - `web/` -- control UI frontend source

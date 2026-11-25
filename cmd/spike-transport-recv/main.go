@@ -7,8 +7,8 @@
 //
 // Operator procedure (two terminals, loopback):
 //
-//  1. go run ./cmd/niox-daemon -config /tmp/a.toml --print-config   # note public key A
-//  2. go run ./cmd/niox-daemon -config /tmp/b.toml --print-config   # note public key B
+//  1. go run ./cmd/niox-session -config /tmp/a.toml --print-config   # note public key A
+//  2. go run ./cmd/niox-session -config /tmp/b.toml --print-config   # note public key B
 //  3. edit /tmp/a.toml: add [[peers]] name="b" address="127.0.0.1:4777" public_key=<B>
 //  4. edit /tmp/b.toml: add [[peers]] name="a" address="127.0.0.1:0"   public_key=<A>
 //  5. go run ./cmd/spike-transport-recv -config /tmp/b.toml -peer a

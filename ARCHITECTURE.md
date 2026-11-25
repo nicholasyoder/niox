@@ -59,10 +59,10 @@ screen before anyone has logged in.
 ┌─────────────────────────── host machine ────────────────────────────┐
 │                                                                      │
 │  ┌─────────────────────┐   control (UDS,     ┌─────────────────────┐ │
-│  │  niox-helper        │   low-frequency)    │  niox-daemon        │ │
+│  │  nioxd              │   low-frequency)    │  niox-session       │ │
 │  │  (root, system unit)│◄────────────────────│  (user session,     │ │
-│  │                     │  daemon connects;   │   optional)         │ │
-│  │  - owns config      │  helper runs fine   │                     │ │
+│  │                     │  session connects;  │   optional)         │ │
+│  │  - owns config      │  nioxd runs fine    │                     │ │
 │  │  - evdev capture    │  without it         │  - audio capture/   │ │
 │  │  - hotkey/focus     │                     │    mix/mux          │ │
 │  │    detection        │                     │  - reacts to focus  │ │
@@ -76,7 +76,7 @@ screen before anyone has logged in.
              ▼                                           ▼
 ┌─────────────────────────── client machine ───────────────────────────┐
 │  ┌─────────────────────┐   control (UDS)     ┌─────────────────────┐ │
-│  │  niox-helper        │◄────────────────────│  niox-daemon        │ │
+│  │  nioxd              │◄────────────────────│  niox-session       │ │
 │  │  (root, system unit)│                     │  (user session,     │ │
 │  │  - owns config      │                     │   optional)         │ │
 │  │  - Noise-encrypted  │                     │  - audio capture    │ │
@@ -87,24 +87,24 @@ screen before anyone has logged in.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Every machine runs `niox-helper`. Role is config/runtime state, not a
+Every machine runs `nioxd`. Role is config/runtime state, not a
 build-time distinction, matching NKMS's existing `Mode: Server|Client`
-approach. `niox-daemon` is only needed for the features that require a
+approach. `niox-session` is only needed for the features that require a
 user session.
 
 ### Privilege model (Linux)
 
-- `niox-helper` runs as root under a **system** systemd unit, started at
+- `nioxd` runs as root under a **system** systemd unit, started at
   boot, so KM works before login (typing the password on a client's login
   screen) and on headless hosts.
-- `niox-daemon` runs unprivileged under a `systemctl --user` unit, because
+- `niox-session` runs unprivileged under a `systemctl --user` unit, because
   audio needs the logged-in user's PipeWire session. On a headless host
-  that wants daemon features, it runs under a lingering user
+  that wants niox-session features, it runs under a lingering user
   (`loginctl enable-linger`).
-- The helper never depends on the daemon. If the daemon is missing,
+- nioxd never depends on niox-session. If niox-session is missing,
   crashed, or restarting, KM is unaffected.
 
-### `niox-helper` (privileged)
+### `nioxd` (privileged)
 
 - The only component that needs elevated privileges: `evdev` device access
   and `uinput` device creation.
@@ -118,24 +118,24 @@ user session.
 - Deliberately fat: capture/receive, encryption, and network I/O all live
   in this one process so the KM hot path never makes a local IPC hop.
 - Serves the local control socket: publishes focus changes and status to
-  any connected daemon or CLI, and accepts low-frequency control requests
+  any connected niox-session or nioxctl, and accepts low-frequency control requests
   (switch focus, reload, config edits).
 
-### `niox-daemon` (user session, optional)
+### `niox-session` (user session, optional)
 
 - Owns everything that needs the user's desktop/audio session rather than
   root: audio capture/playback (PipeWire/PulseAudio), and later video
   capture/encode.
-- Subscribes to the helper's **focus events** and reacts by adjusting the
+- Subscribes to nioxd's **focus events** and reacts by adjusting the
   audio mixer (mute non-focused clients in "follow focus" mode, or leave
   everything mixed in "always mix" mode — selected in config).
 - Runs the HTTP control API and serves the web UI (see below). Config
-  edits are sent to the helper over IPC rather than written directly.
+  edits are sent to nioxd over IPC rather than written directly.
 
-### Local IPC (helper ↔ daemon / CLI)
+### Local IPC (nioxd ↔ niox-session / nioxctl)
 
-- Unix domain socket at `/run/niox/niox.sock`. The **helper listens**;
-  `niox-daemon` and the `nioxctl` CLI connect as clients.
+- Unix domain socket at `/run/niox/niox.sock`. **nioxd listens**;
+  `niox-session` and the `nioxctl` CLI connect as clients.
 - Access is restricted by file permissions: root-owned, group `niox`,
   mode `0660`. Membership in the `niox` group is the access boundary.
   Peer credentials (`SO_PEERCRED`) can further restrict which requests a
@@ -176,7 +176,7 @@ user session.
 
 ## Control plane
 
-- Before the web UI exists, `nioxctl` (talking to the helper socket) and
+- Before the web UI exists, `nioxctl` (talking to the nioxd socket) and
   `systemctl reload` are the control surface.
 - The HTTP server and web UI are the **primary** long-term control
   surface, not a system tray, because they work on headless hosts where
@@ -196,14 +196,14 @@ Single Go monorepo:
 ```
 niox/
   cmd/
-    niox-helper/     # privileged binary: config owner, KM capture/send/receive/uinput
-    niox-daemon/     # user-session binary: audio, control API, web UI
+    nioxd/     # privileged binary: config owner, KM capture/send/receive/uinput
+    niox-session/     # user-session binary: audio, control API, web UI
   internal/
     km/              # evdev/uinput capture + virtual input
     audio/           # capture, Roc encode/decode, mixer, focus-follow logic
     video/           # not yet implemented — placeholder for future work
     transport/       # Noise handshake + AEAD-wrapped UDP, shared by subsystems
-    ipc/             # UDS control channel (helper <-> daemon/CLI)
+    ipc/             # UDS control channel (nioxd <-> niox-session/nioxctl)
     control/         # HTTP API + web UI (embed.FS)
     config/          # shared TOML config loading
   web/               # web UI static assets/frontend source
@@ -215,18 +215,18 @@ niox/
 - TOML, replacing NKMS's ini-style config and matching audio-switcher's
   existing choice.
 - One system config file per machine, `/etc/niox/niox.toml`, owned by
-  the helper. It lists this machine's identity/keypair, known peers
+  nioxd. It lists this machine's identity/keypair, known peers
   (address + public key + role), per-subsystem settings (KM hotkeys,
   audio mode — follow-focus vs. always-mix), and the web UI auth token.
-  The daemon receives the slices it needs from the helper over IPC.
+  niox-session receives the slices it needs from nioxd over IPC.
 
 ## Packaging & deployment
 
 - **Fedora/RPM is the primary target**; `.deb` is kept building as a
   secondary target. Both mirror NKMS's existing `rpm/` and `debian/` setups:
-  - `niox-helper` — a system unit (root), enabled at boot, analogous to
+  - `nioxd` — a system unit (root), enabled at boot, analogous to
     `nkms-daemon` today.
-  - `niox-daemon` — a `systemctl --user` unit.
+  - `niox-session` — a `systemctl --user` unit.
   - A `niox` group, `/etc/niox`, and `/run/niox` (via `RuntimeDirectory=`).
   - Fedora: a firewalld service definition for niox's UDP ports; SELinux
     compatibility for the system unit's evdev/uinput access.
@@ -237,7 +237,7 @@ niox/
 
 - **macOS.** NKMS has a working macOS client that could be ported
   (Quartz virtual input, edge clamping, LaunchAgent). It wouldn't use the
-  root-helper/user-daemon split; it would be one user-level process with
+  root-service/user-session split; it would be one user-level process with
   the Accessibility permission.
 - **Video/graphics.** Scope and constraints (capture API, encode,
   acceptable latency budget) aren't defined yet. The `internal/video`
@@ -252,10 +252,10 @@ niox/
 
 ## Open questions to revisit
 
-- Where the HTTP control API runs on a headless host: in `niox-daemon`
+- Where the HTTP control API runs on a headless host: in `niox-session`
   under a lingering user, or in a separate unprivileged system service
   so the web UI needs no user session at all.
 - KM ordering: per-event sequence numbers vs. one datagram per evdev
   SYN frame.
-- Exact focus-event schema between the helper and the audio mixer.
+- Exact focus-event schema between nioxd and the audio mixer.
 - Web UI auth mechanism specifics (static token vs. session login).

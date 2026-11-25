@@ -9,7 +9,7 @@ import (
 )
 
 // socketMode restricts the control socket to its owner, which — combined
-// with niox-daemon listening from inside the session user's own runtime
+// with niox-session listening from inside the session user's own runtime
 // directory — is the access boundary ARCHITECTURE.md describes: only that
 // user (and root, which bypasses DAC checks) can connect.
 const socketMode = 0o600
