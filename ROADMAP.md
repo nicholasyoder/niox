@@ -89,7 +89,7 @@ are and just get checked off; nothing moves into this section.
   full in-memory handshake and data exchange. Tampered, truncated, and
   wrong-key datagrams are all rejected.
 
-- [ ] **Transport: peer sessions + liveness** — the socket half: one UDP
+- [x] **Transport: peer sessions + liveness** — the socket half: one UDP
   socket per nioxd, serving every configured peer:
   - Demultiplex by receiver index and source address. Datagrams from
     unknown or unauthenticated sources are dropped silently.

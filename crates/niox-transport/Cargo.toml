@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+getrandom = "0.4.3"
 niox-config.workspace = true
 # Only the primitives KK_25519_ChaChaPoly_BLAKE2s needs. snow's "std" feature
 # is left off: it unconditionally pulls in ring, and nothing here needs it.
@@ -19,4 +20,11 @@ snow = { version = "0.10.0", default-features = false, features = [
     "use-curve25519",
     "use-getrandom",
 ] }
+socket2 = "0.6.5"
 thiserror = "2.0.21"
+tracing = "0.1.44"
+
+[dev-dependencies]
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

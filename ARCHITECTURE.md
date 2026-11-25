@@ -179,10 +179,25 @@ user session.
   keys that won't open the datagram. The first plaintext byte names the
   subsystem (`km`, `audio`), so all subsystems share one session per
   peer; an empty payload is a keepalive.
-- **Session liveness**: sessions carry keepalives. Either side restarting,
-  or a network drop, is detected and recovered by an automatic
-  re-handshake using the same configured keys. No re-pairing is needed,
-  since trust lives in config, not in session state.
+- **Sessions and liveness** (`niox_transport::Endpoint`): one UDP socket
+  per nioxd (dual-stack) serves every configured peer, and a driver
+  thread owns all handshake and timer state. Senders on any thread
+  encrypt and send directly on the shared socket; received datagrams are
+  decrypted and handed to a handler on the driver thread, with no channel
+  hop. Each side sends a keepalive after 1s without sending anything, and
+  declares a peer down after 3.5s without hearing from it. While a peer
+  is down, both sides send handshake inits with backoff (250ms doubling
+  to 2s), so either side restarting, or a network drop, recovers on its
+  own using the same configured keys; no re-pairing is needed, since
+  trust lives in config, not in session state. A restarted peer
+  handshakes on startup, so the other side replaces its stale session
+  without waiting for it to time out. The responder treats a new session
+  as unconfirmed until the first authenticated datagram arrives on it.
+  If both sides initiate at once, the lower public key's init wins.
+  Replies follow a peer's last authenticated source address, so a peer
+  whose IP changed keeps working. Subsystems get per-peer up/down events.
+  On the test VMs, round trips take about 50µs (p50), and one sending
+  thread manages about 1 Gbit/s.
 - **Control messages that must arrive** (e.g. the capabilities exchange)
   are acknowledged and resent. Per-event KM traffic is not.
 - Each machine has a keypair; a client trusts a host (and vice versa) by

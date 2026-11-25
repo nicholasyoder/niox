@@ -2,10 +2,13 @@
 //! two configured peers, shared by the KM and (later) audio subsystems. See
 //! ARCHITECTURE.md.
 //!
-//! This crate is the socket-free core. It turns keys and bytes into
-//! datagrams and back, and never touches the network or the clock (apart
-//! from [`Timestamp::now`]), so every path is unit-testable. The socket
-//! half (peer sessions, retransmission, keepalives) builds on top of it.
+//! The crate has two layers. The socket-free core ([`initiate`],
+//! [`respond`], [`Session`]) turns keys and bytes into datagrams and back,
+//! and never touches the network or the clock (apart from
+//! [`Timestamp::now`]), so every path is unit-testable. [`Endpoint`] is the
+//! socket half built on it: one UDP socket serving every configured peer,
+//! with handshake retransmission, keepalives, liveness detection, and
+//! automatic re-handshakes (see its module docs for the lifecycle).
 //!
 //! # Handshake
 //!
@@ -57,11 +60,13 @@
 //! bound into every handshake through the Noise prologue, and the type and
 //! reserved bytes are checked exactly.
 
+mod endpoint;
 mod handshake;
 mod packet;
 mod replay;
 mod session;
 
+pub use endpoint::{Endpoint, EndpointConfig, Event, Handle, PeerId, PeerSpec, SendError, Timers};
 pub use handshake::{Initiation, Responded, Timestamp, initiate, respond};
 pub use packet::{
     DATA_HEADER_LEN, Datagram, INIT_LEN, MAX_BODY, MAX_DATAGRAM, MAX_PAYLOAD, PROTOCOL_VERSION,
