@@ -8,16 +8,21 @@ It's the successor to two earlier projects kept under `old/` for
 reference: `nkms` (keyboard/mouse switching) and `audio-switcher`
 (network audio mixing).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design. Nothing here
-is implemented yet -- this is initial project scaffolding.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
+[ROADMAP.md](ROADMAP.md) for progress.
+
+**Status:** early development. Encrypted single-client keyboard/mouse
+works on Linux. The current goal is full Linux parity with NKMS
+(multi-client, hot-plug, login-screen support, RPM/deb packaging) so NKMS
+can be retired. Audio and the web UI come after that.
 
 ## Layout
 
-- `cmd/niox-helper` -- privileged binary: KM capture/send/receive, virtual input
-- `cmd/niox-daemon` -- user-session binary: audio, control API, web UI
+- `cmd/niox-helper` -- privileged system service: config owner, KM capture/send/receive, virtual input
+- `cmd/niox-daemon` -- optional user-session binary: audio, control API, web UI
 - `internal/km`, `internal/audio`, `internal/video` -- per-subsystem logic
 - `internal/transport` -- encrypted UDP transport shared by subsystems
-- `internal/ipc` -- local control channel between the two binaries
+- `internal/ipc` -- local control channel (helper listens; daemon and CLI connect)
 - `internal/control` -- HTTP API + web UI
 - `internal/config` -- shared TOML config
 - `web/` -- control UI frontend source
