@@ -1,9 +1,9 @@
 //! niox's keyboard/mouse subsystem. See ARCHITECTURE.md.
 //!
-//! This is the I/O-free half: everything here is plain state machines over
-//! [`InputEvent`]s and [`Message`]s, with time passed in, so it is tested
-//! without devices or sockets. The device half (evdev capture, uinput
-//! playback) and the wiring in nioxd build on it.
+//! Most of it is I/O-free: plain state machines over [`InputEvent`]s and
+//! [`Message`]s, with time passed in, so it is tested without devices or
+//! sockets. [`device`] is the device half (evdev capture, uinput playback),
+//! and nioxd wires the two to the transport.
 //!
 //! - [`wire`]: KM messages, carried as `Subsystem::Km` transport payloads.
 //!   Each evdev frame (the events up to a `SYN_REPORT`) travels as one
@@ -15,9 +15,13 @@
 //!   released when focus leaves it or its connection drops.
 //! - [`HostKm`] and [`ClientKm`]: the two ends of the protocol, built from
 //!   the above, including the acknowledged capabilities exchange.
+//! - [`device`] (Linux): discovering, grabbing, and reading keyboards and
+//!   mice, and playing frames into a uinput device.
 
 mod caps;
 mod client;
+#[cfg(target_os = "linux")]
+pub mod device;
 mod event;
 mod focus;
 mod held;

@@ -224,6 +224,24 @@ user session.
     a key's later repeats and release never reach a target that didn't
     see its press. A client releases everything its host left held when
     the session drops.
+  - *Devices* (`niox_km::device`). Keyboards and mice are found by
+    NKMS's heuristic (`BTN_LEFT`, or both `KEY_A` and `KEY_Z`), skipping
+    niox's own `niox virtual input` devices, and each is grabbed
+    exclusively with its own capture thread. Before grabbing, capture
+    waits (bounded) for held keys to be released, since a grab swallows
+    their releases and would leave them stuck down locally. Capabilities
+    cover only what uinput replays: keys, relative and absolute axes,
+    `EV_MSC`, switches, and input properties; never `EV_REP`, since the
+    source's repeats are forwarded and the virtual device would add its
+    own. After a `SYN_DROPPED`, capture discards through the next
+    `SYN_REPORT` and emits whatever releases and presses bring its key
+    state in line with the kernel's; an unplugged device ends with
+    releases for everything it had down.
+  - *Cleanup.* The kernel drops a grab and destroys a uinput device
+    when its descriptor closes, so any process exit (even `SIGKILL`)
+    cleans up. Within a running process, device threads share a
+    `Stop`; a guard triggers it if a thread panics, so a panic never
+    leaves other threads holding grabs with nothing replaying them.
 - **Control messages that must arrive** (e.g. the capabilities exchange)
   are acknowledged and resent. Per-event KM traffic is not.
 - Each machine has a keypair; a client trusts a host (and vice versa) by

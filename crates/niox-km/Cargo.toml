@@ -1,6 +1,6 @@
 [package]
 name = "niox-km"
-description = "niox keyboard/mouse subsystem: wire protocol, hotkey and focus logic"
+description = "niox keyboard/mouse subsystem: wire protocol, hotkey and focus logic, evdev capture and uinput playback"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,3 +13,15 @@ workspace = true
 niox-config.workspace = true
 niox-transport.workspace = true
 thiserror = "2.0.21"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13.2"
+# The same nix evdev uses, for poll(2).
+nix = { version = "0.29", features = ["poll"] }
+tracing = "0.1.44"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive"] }
+signal-hook = "0.4.6"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

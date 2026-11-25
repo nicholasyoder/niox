@@ -129,7 +129,7 @@ are and just get checked off; nothing moves into this section.
   *Verification*: unit tests for all of the above, with no devices or
   sockets involved.
 
-- [ ] **KM: local devices** — the device half of `niox-km`, via the
+- [x] **KM: local devices** — the device half of `niox-km`, via the
   `evdev` crate:
   - Keyboard/mouse device discovery and filtering, exclusive grab,
     capture loop, unioned capabilities, and uinput virtual device
