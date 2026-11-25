@@ -25,6 +25,14 @@ macOS is deferred (see below).
   are superseded; see `archive/go/README.md`.
 - Every step leaves the workspace passing `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
+- Verification that needs real machines ("two machines", "3-machine
+  test", login-screen checks) runs on the libvirt test VMs in
+  `tools/testvm/` (host + two clients, GNOME and KDE), without waiting
+  to be asked. Build on the workstation, copy the binaries over, and drive
+  input with `virsh send-key` / `mouse_move`. Boot only the VMs a test
+  needs, revert to `clean` when a run leaves them in a bad state, and shut
+  them down afterward. Steps that need physical hardware still need the
+  real machines; say so rather than counting a VM run as covering them.
 - Design for the final shape up front where it's cheap: multiple peers,
   nioxd owning its config, and a transport that recovers on its own. No
   step should knowingly build something a later step has to tear out.
