@@ -321,3 +321,21 @@ Tracked as future work, not scheduled into the items above:
 - Tray icon convenience layer for desktop machines.
 - Per-client audio volume beyond mute.
 - Web UI auth beyond a static token (e.g. proper session login).
+
+## Bugfixes
+
+Known bugs that aren't part of a step above. Fixes to shipped behavior
+or its tests land on master and are merged into develop. Pick these up
+between steps.
+
+- [ ] **Flaky transport endpoint tests: port reuse race** — in
+  `crates/niox-transport/tests/endpoint.rs`, `Node::new` binds port 0 to
+  pick a free port, records it, and drops the socket. `Node::start` binds
+  that port again later. In between, another test running in parallel
+  can take it, and the bind's `unwrap()` panics. Seen once in
+  `learns_a_peers_address_from_authenticated_traffic` during a full
+  `cargo test`, while it passed 15 out of 15 runs on its own. Fix it by
+  keeping the bound socket in `Node` and handing it to `start` rather
+  than rebinding.
+  *Verification*: the workspace's `cargo test` passes 20 runs in a row,
+  and nothing in the tests binds a port it picked earlier.
