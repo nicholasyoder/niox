@@ -10,6 +10,8 @@
 //!   release can't leave a key stuck down.
 //! - [`VirtualDevice`] is a uinput device created from [`Capabilities`](crate::Capabilities)
 //!   that plays frames.
+//! - [`Monitor`] reports input device nodes as they're plugged in and
+//!   unplugged, from the kernel's uevents.
 //! - [`Stop`] is a shutdown signal every device loop watches. A
 //!   [`StopGuard`] triggers it when dropped, including while a thread
 //!   unwinds from a panic, so one thread failing never leaves the others
@@ -22,6 +24,7 @@
 
 mod capture;
 mod discover;
+mod monitor;
 mod stop;
 mod virt;
 
@@ -30,6 +33,7 @@ use std::path::PathBuf;
 
 pub use capture::{Capture, CaptureEnd};
 pub use discover::{InputDevice, discover, union_capabilities};
+pub use monitor::{Monitor, MonitorEvent};
 pub use stop::{Stop, StopGuard};
 pub use virt::VirtualDevice;
 

@@ -12,6 +12,8 @@ clap = { version = "4.6.10", features = ["derive"] }
 niox-config.workspace = true
 niox-km.workspace = true
 niox-transport.workspace = true
+# The same nix niox-km uses, for poll(2).
+nix = { version = "0.29", features = ["poll"] }
 signal-hook = "0.4.6"
 tracing = "0.1.44"
 tracing-journald = "0.3.2"

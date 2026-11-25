@@ -1,18 +1,23 @@
-//! The host side: grab the local keyboards and mice, run the hotkey and
-//! focus logic, and send frames to the focused client (or play them on
-//! this machine's own passthrough device).
+//! The host side: grab the local keyboards and mice (including ones
+//! plugged in later), run the hotkey and focus logic, and send frames to
+//! the focused client (or play them on this machine's own passthrough
+//! device).
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, bail};
+use anyhow::Context as _;
 use niox_config::Hotkey;
 use niox_km::device::{
-    Capture, CaptureEnd, InputDevice, Stop, VirtualDevice, discover, union_capabilities,
+    Capture, CaptureEnd, InputDevice, Monitor, MonitorEvent, Stop, VirtualDevice, discover,
+    union_capabilities,
 };
-use niox_km::{HostKm, HostOutput, Message, Target};
+use niox_km::{Capabilities, HostKm, HostOutput, Message, Target};
 use niox_transport::{Event, Handle, PeerId};
+use nix::errno::Errno;
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use tracing::{debug, error, info, warn};
 
 use super::{lock, send};
@@ -30,8 +35,9 @@ const TICK: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 pub struct State {
     km: HostKm<PeerId>,
-    /// Plays input on this machine while it has focus.
-    local: VirtualDevice,
+    /// Plays input on this machine while it has focus. Absent while there
+    /// are no devices to capture.
+    local: Option<VirtualDevice>,
     out: Vec<HostOutput<PeerId>>,
     buf: Vec<u8>,
 }
@@ -48,7 +54,9 @@ impl State {
         for output in out.drain(..) {
             match output {
                 HostOutput::Local(events) => {
-                    if let Err(e) = self.local.play(&events) {
+                    if let Some(local) = &mut self.local
+                        && let Err(e) = local.play(&events)
+                    {
                         warn!("{:#}", anyhow::Error::from(e));
                     }
                 }
@@ -62,6 +70,42 @@ impl State {
             }
         }
         self.out = out;
+    }
+
+    /// Grows the capabilities sent to clients, and the passthrough
+    /// device's, to cover a newly captured device. They never shrink, so a
+    /// device unplugged and plugged back in changes nothing. Returns
+    /// `false` if the device can't be used.
+    fn add_capabilities(&mut self, handle: &Handle, caps: &Capabilities) -> bool {
+        let mut union = self.km.capabilities().clone();
+        union.union_with(caps);
+        if union == *self.km.capabilities() {
+            return true;
+        }
+        let mut result = Ok(());
+        self.step(handle, |km, out| {
+            result = km.set_capabilities(union.clone(), Instant::now(), out);
+        });
+        if let Err(e) = result {
+            error!(
+                "{:#}",
+                anyhow::Error::from(e).context("can't use a new input device")
+            );
+            return false;
+        }
+        // Destroying the old device releases anything held on it.
+        match VirtualDevice::create(&union) {
+            Ok(dev) => {
+                self.local = Some(dev);
+                self.km.local_device_replaced();
+            }
+            Err(e) => warn!(
+                "{:#}",
+                anyhow::Error::from(e).context("recreating the passthrough device")
+            ),
+        }
+        info!("input capabilities grew; updating clients");
+        true
     }
 
     fn is_ready(&self, peer: PeerId) -> bool {
@@ -110,27 +154,43 @@ pub fn on_event(state: &Mutex<State>, handle: &Handle, event: Event<'_>) {
 #[derive(Debug)]
 pub struct Host {
     state: Arc<Mutex<State>>,
-    /// Discovered devices, until [`Host::start`] hands them to their
-    /// capture threads.
-    devices: Vec<InputDevice>,
+    /// The hot-plug monitor (if it could be opened) and the devices found
+    /// at startup, until [`Host::start`] hands them to the devices thread.
+    startup: Option<(Option<Monitor>, Vec<InputDevice>)>,
     handle: Option<Handle>,
     threads: Vec<(String, JoinHandle<()>)>,
 }
 
 impl Host {
     /// Finds the local keyboards and mice and creates the passthrough
-    /// device, without grabbing anything yet.
+    /// device, without grabbing anything yet. Having none is fine: they're
+    /// picked up when plugged in.
     pub fn new(hotkey: Hotkey, clients: Vec<PeerId>) -> anyhow::Result<Self> {
+        // Watch before scanning, so nothing plugged in between is missed.
+        let monitor = match Monitor::open() {
+            Ok(m) => Some(m),
+            Err(e) => {
+                error!("can't watch for input devices being plugged in: {e}");
+                None
+            }
+        };
         let devices = discover().context("discovering input devices")?;
         if devices.is_empty() {
-            bail!("this machine hosts clients but has no keyboard or mouse (is nioxd root?)");
+            warn!(
+                "this machine hosts clients but has no keyboard or mouse yet \
+                 (is nioxd root?); waiting for one to be plugged in"
+            );
         }
         for dev in &devices {
             info!(path = %dev.path().display(), name = dev.name(), "found input device");
         }
         let caps = union_capabilities(&devices);
         let km = HostKm::new(hotkey, clients, caps.clone())?;
-        let local = VirtualDevice::create(&caps).context("creating the passthrough device")?;
+        let local = if caps.is_empty() {
+            None
+        } else {
+            Some(VirtualDevice::create(&caps).context("creating the passthrough device")?)
+        };
         Ok(Self {
             state: Arc::new(Mutex::new(State {
                 km,
@@ -138,7 +198,7 @@ impl Host {
                 out: Vec::new(),
                 buf: Vec::new(),
             })),
-            devices,
+            startup: Some((monitor, devices)),
             handle: None,
             threads: Vec::new(),
         })
@@ -148,18 +208,22 @@ impl Host {
         Arc::clone(&self.state)
     }
 
-    /// Grabs every device on its own capture thread, and starts the timer
+    /// Starts the devices thread, which grabs every device on its own
+    /// capture thread and picks up devices plugged in later, and the timer
     /// thread that resends unacknowledged capabilities.
     pub fn start(&mut self, handle: Handle, stop: &Stop) -> anyhow::Result<()> {
-        for dev in std::mem::take(&mut self.devices) {
-            let name = format!("capture {}", dev.path().display());
-            let (state, handle, stop) = (Arc::clone(&self.state), handle.clone(), stop.clone());
-            let thread = thread::Builder::new()
-                .name(name.clone())
-                .spawn(move || capture(dev, &state, &handle, &stop))
-                .with_context(|| format!("spawning {name}"))?;
-            self.threads.push((name, thread));
-        }
+        let (monitor, initial) = self.startup.take().unwrap_or_default();
+        let devices = Devices {
+            state: Arc::clone(&self.state),
+            handle: handle.clone(),
+            stop: stop.clone(),
+            captures: Vec::new(),
+        };
+        let thread = thread::Builder::new()
+            .name("km devices".into())
+            .spawn(move || devices.run(monitor, initial))
+            .context("spawning the KM devices thread")?;
+        self.threads.push(("km devices".into(), thread));
 
         let (state, timer_handle, stop) = (Arc::clone(&self.state), handle.clone(), stop.clone());
         let thread = thread::Builder::new()
@@ -185,6 +249,146 @@ impl Host {
                 // Focus on the host is always available.
                 let _ = km.set_focus(Target::Host, out);
             });
+        }
+    }
+}
+
+/// The devices thread: starts a capture thread per keyboard or mouse,
+/// at startup and whenever one is plugged in, and joins them all on stop.
+#[derive(Debug)]
+struct Devices {
+    state: Arc<Mutex<State>>,
+    handle: Handle,
+    stop: Stop,
+    captures: Vec<CaptureThread>,
+}
+
+#[derive(Debug)]
+struct CaptureThread {
+    /// The device node, until the device is removed. The node's name can
+    /// then be reused by a new device while this thread is still
+    /// finishing.
+    path: Option<PathBuf>,
+    thread: JoinHandle<()>,
+}
+
+impl Devices {
+    fn run(mut self, monitor: Option<Monitor>, initial: Vec<InputDevice>) {
+        let _stop_on_panic = self.stop.panic_guard();
+        for dev in initial {
+            self.add(dev);
+        }
+        if let Some(mut monitor) = monitor
+            && let Err(e) = self.watch(&mut monitor)
+        {
+            error!("stopped watching for input devices being plugged in: {e:#}");
+        }
+        self.stop.wait();
+        for c in self.captures {
+            if c.thread.join().is_err() {
+                error!("a capture thread panicked");
+            }
+        }
+    }
+
+    /// Handles plug and unplug events until `stop` triggers.
+    fn watch(&mut self, monitor: &mut Monitor) -> anyhow::Result<()> {
+        loop {
+            let mut fds = [
+                PollFd::new(monitor.fd(), PollFlags::POLLIN),
+                PollFd::new(self.stop.fd(), PollFlags::POLLIN),
+            ];
+            match poll(&mut fds, PollTimeout::NONE) {
+                Ok(_) | Err(Errno::EINTR) => {}
+                Err(e) => return Err(anyhow::Error::from(e).context("waiting for uevents")),
+            }
+            if self.stop.is_triggered() {
+                return Ok(());
+            }
+            while let Some(event) = monitor.read().context("reading uevents")? {
+                match event {
+                    MonitorEvent::Added(path) => self.plugged_in(&path),
+                    MonitorEvent::Removed(path) => {
+                        for c in &mut self.captures {
+                            if c.path.as_ref() == Some(&path) {
+                                c.path = None;
+                            }
+                        }
+                    }
+                    MonitorEvent::Overflow => {
+                        warn!("missed some input device events; rescanning");
+                        match discover() {
+                            Ok(devices) => {
+                                for dev in devices {
+                                    if !self.is_captured(dev.path()) {
+                                        self.add(dev);
+                                    }
+                                }
+                            }
+                            Err(e) => error!("{:#}", anyhow::Error::from(e)),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn plugged_in(&mut self, path: &Path) {
+        // Already found by the startup scan (the monitor opens first).
+        if self.is_captured(path) {
+            return;
+        }
+        let dev = match InputDevice::open(path) {
+            Ok(dev) => dev,
+            Err(e) => {
+                warn!(path = %path.display(), "can't open new input device: {e}");
+                return;
+            }
+        };
+        if !dev.is_keyboard_or_mouse() {
+            debug!(path = %path.display(), name = dev.name(), "not a keyboard or mouse");
+            return;
+        }
+        info!(path = %path.display(), name = dev.name(), "input device plugged in");
+        self.add(dev);
+    }
+
+    /// Whether a capture thread is still running for `path`.
+    fn is_captured(&mut self, path: &Path) -> bool {
+        self.captures
+            .iter()
+            .any(|c| c.path.as_deref() == Some(path) && !c.thread.is_finished())
+    }
+
+    /// Makes sure clients can play what `dev` produces, then starts
+    /// capturing it.
+    fn add(&mut self, dev: InputDevice) {
+        if !lock(&self.state).add_capabilities(&self.handle, &dev.capabilities()) {
+            return;
+        }
+        let path = dev.path().to_owned();
+        let name = format!(
+            "capture {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let (state, handle, stop) = (
+            Arc::clone(&self.state),
+            self.handle.clone(),
+            self.stop.clone(),
+        );
+        match thread::Builder::new()
+            .name(name)
+            .spawn(move || capture(dev, &state, &handle, &stop))
+        {
+            Ok(thread) => {
+                // Forget threads that have finished.
+                self.captures.retain(|c| !c.thread.is_finished());
+                self.captures.push(CaptureThread {
+                    path: Some(path),
+                    thread,
+                });
+            }
+            Err(e) => error!(path = %path.display(), "spawning a capture thread: {e}"),
         }
     }
 }

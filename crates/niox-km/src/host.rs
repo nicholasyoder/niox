@@ -106,6 +106,19 @@ impl<P: Copy + Eq> HostKm<P> {
         self.ring.focused()
     }
 
+    /// The capabilities clients are sent.
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+
+    /// The host's own passthrough device was destroyed and recreated
+    /// (e.g. to cover a newly plugged-in device), which released
+    /// everything held on it. Forgets those keys, so their repeats and
+    /// releases don't reach the new device without a press.
+    pub fn local_device_replaced(&mut self) {
+        self.host_held.clear();
+    }
+
     /// Clients in the focus cycle (connected, with a device), in order.
     pub fn ready_clients(&self) -> impl Iterator<Item = P> + '_ {
         self.ring.available()
@@ -724,6 +737,18 @@ mod tests {
         r.km.on_message('a', &Message::CapabilitiesAck { generation: 2 })
             .unwrap();
         assert_eq!(r.km.next_deadline(), None);
+    }
+
+    #[test]
+    fn replacing_the_local_device_forgets_host_keys() {
+        let mut r = Rig::new(&['a']);
+        assert_eq!(r.press(A), [Local(vec![key(A, KEY_DOWN)])]);
+        r.km.local_device_replaced();
+        // The new device never saw the press: its repeats and release are
+        // dropped, and a fresh press goes through.
+        assert!(r.frame(&[key(A, KEY_REPEAT)]).is_empty());
+        assert!(r.release(A).is_empty());
+        assert_eq!(r.press(A), [Local(vec![key(A, KEY_DOWN)])]);
     }
 
     #[test]

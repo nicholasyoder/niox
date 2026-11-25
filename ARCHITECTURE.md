@@ -236,11 +236,21 @@ user session.
     own. After a `SYN_DROPPED`, capture discards through the next
     `SYN_REPORT` and emits whatever releases and presses bring its key
     state in line with the kernel's; an unplugged device ends with
-    releases for everything it had down.
+    releases for everything it had down. New devices are found by
+    listening to the kernel's uevents (`NETLINK_KOBJECT_UEVENT`, the
+    stream udevd itself reads), so hot-plug needs neither libudev nor
+    udevd; by the time the kernel announces an input device, devtmpfs
+    has created its node.
   - *In nioxd* (`crates/nioxd/src/km`). Each peer is handled by its
     configured role: for `client` peers this machine is the host, and
-    grabs its keyboards and mice at startup (playing them on a local
-    passthrough device while focus is home); for `host` peers it creates
+    grabs its keyboards and mice (playing them on a local passthrough
+    device while focus is home). A devices thread grabs each at startup
+    and as it's plugged in, starting it with no devices at all if need
+    be. The capabilities sent to clients, and the passthrough device's,
+    are the union of every device seen since startup, so they only grow;
+    a device that adds something recreates the passthrough device and
+    resends capabilities, and an unplugged device changes nothing. For
+    `host` peers it creates
     a virtual device per host once that host's capabilities arrive. A
     machine can be both. On the host, each capture thread runs read →
     hotkey/focus → encrypt → send under one lock shared with the

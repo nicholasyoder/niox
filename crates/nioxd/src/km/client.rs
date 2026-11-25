@@ -70,11 +70,20 @@ impl Hosts {
             return;
         };
         if let Some(caps) = out.recreate {
-            match VirtualDevice::create(&caps) {
+            // A host with no keyboard or mouse yet has nothing to play;
+            // its next capabilities, once it has some, create the device.
+            let created = if caps.is_empty() {
+                Ok(None)
+            } else {
+                VirtualDevice::create(&caps).map(Some)
+            };
+            match created {
                 Ok(dev) => {
-                    info!(host = handle.peer_name(peer), "virtual device created");
+                    if dev.is_some() {
+                        info!(host = handle.peer_name(peer), "virtual device created");
+                    }
                     // The old device, if any, goes away here.
-                    host.dev = Some(dev);
+                    host.dev = dev;
                 }
                 Err(e) => {
                     error!(

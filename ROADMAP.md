@@ -158,7 +158,7 @@ are and just get checked off; nothing moves into this section.
   unplug the network while holding a key; each recovers within a few
   seconds with nothing stuck down.
 
-- [ ] **Multi-client + hot-plug** — N clients with focus cycling,
+- [x] **Multi-client + hot-plug** — N clients with focus cycling,
   clients joining and leaving at any time, and udev-monitor hot-plug of
   input devices:
   - When devices change, re-send the unioned capabilities to clients and
@@ -204,6 +204,9 @@ are and just get checked off; nothing moves into this section.
   - Fedora specifics: a firewalld service definition for niox's UDP
     port, and confirm SELinux allows the system unit to access
     `/dev/uinput` and `/dev/input/*`.
+  - If the unit is sandboxed, keep what KM needs: `AF_NETLINK` (hot-plug
+    listens to kernel uevents) alongside `AF_INET`/`AF_INET6` and
+    `AF_UNIX`, and no `PrivateNetwork=`, which hides uevents.
   - Upgrades preserve the config and keypair.
 
   *Verification*: fresh Fedora install, install the RPM, pair with a
