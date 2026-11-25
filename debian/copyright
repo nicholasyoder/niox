@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: niox
+Source: https://github.com/nicholasyoder/niox
+
+Files: *
+Copyright: 2026 Nicholas Yoder
+License: MPL-2.0
+
+License: MPL-2.0
+ This Source Code Form is subject to the terms of the Mozilla Public
+ License, v. 2.0. If a copy of the MPL was not distributed with this
+ file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ .
+ On Debian systems, the full text of the Mozilla Public License 2.0 can be
+ found in the file '/usr/share/common-licenses/MPL-2.0'.

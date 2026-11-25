@@ -11,7 +11,7 @@ Name:           niox
 Version:        %{niox_version}
 Release:        1%{?dist}
 Summary:        Share one keyboard and mouse across Linux machines over the LAN
-License:        LicenseRef-Unspecified
+License:        MPL-2.0
 URL:            https://github.com/nicholasyoder/niox
 Source0:        %{name}-%{version}.tar.gz
 Source1:        %{name}-%{version}-vendor.tar.gz
@@ -72,6 +72,7 @@ fi
 %systemd_postun_with_restart nioxd.service
 
 %files
+%license LICENSE
 %doc README.md
 %{_bindir}/nioxd
 %{_bindir}/nioxctl

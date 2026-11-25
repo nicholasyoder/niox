@@ -7,6 +7,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 publish = false
+license = "MPL-2.0"
+repository = "https://github.com/nicholasyoder/niox"
 
 [workspace.dependencies]
 niox-config = { path = "crates/niox-config" }

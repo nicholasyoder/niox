@@ -50,3 +50,7 @@ Then, on each machine:
    `nioxctl status`.
 4. Fedora: `sudo firewall-cmd --permanent --add-service=niox && sudo firewall-cmd --reload`
    to open UDP 4777.
+
+## License
+
+niox is licensed under the [Mozilla Public License 2.0](LICENSE).
