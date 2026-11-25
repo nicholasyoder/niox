@@ -1,0 +1,5 @@
+# Pinned to the rustc Fedora ships (rust-1.100.0, fc45), so local builds
+# match RPM builds. Bump together with Fedora's rust package.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

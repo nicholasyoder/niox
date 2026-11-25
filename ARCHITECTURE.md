@@ -218,15 +218,72 @@ niox/
 Crates are created when the roadmap reaches them; video gets a crate
 once it has a design.
 
+## Implementation conventions
+
+- **Concurrency: plain OS threads and channels, no async runtime** in
+  nioxd. The KM hot path is a handful of blocking loops (evdev read →
+  encrypt → UDP send; UDP recv → decrypt → uinput write), each best served
+  by a dedicated thread that blocks on its fd with no scheduler in
+  between. Low-frequency work (the control socket, timers, signal
+  handling) also gets threads, talking over `std::sync::mpsc` or
+  crossbeam channels. An async runtime may be used where it earns its
+  keep off the hot path (e.g. the HTTP server in niox-control), but never
+  in nioxd's KM threads.
+- **Errors**: library crates define typed errors with `thiserror`;
+  binaries use `anyhow` and add context at each layer. Per the usual
+  convention, an error's `Display` describes only its own layer and
+  exposes the cause through `source()`, so `{:#}` prints each layer once.
+  Library code doesn't `unwrap()` (a workspace clippy lint); tests may.
+- **Logging**: `tracing`. Binaries log to the systemd journal (via
+  `tracing-journald`, keeping structured fields and priorities) when
+  `JOURNAL_STREAM` is set, and to stderr otherwise. `RUST_LOG` overrides
+  the default `info` level.
+- **Workspace hygiene**: shared lints and the release profile live in the
+  root `Cargo.toml` (`unsafe_code` is denied; a crate that needs FFI
+  allows it locally). The release profile keeps unwinding, since Drop
+  guards are what release evdev grabs and uinput devices on panic.
+  `rust-toolchain.toml` pins Fedora's packaged rustc so local and RPM
+  builds match, and `Cargo.lock` is committed.
+
 ## Config
 
 - TOML, replacing NKMS's ini-style config and matching audio-switcher's
-  existing choice.
+  existing choice. Loaded and validated by the `niox-config` crate; the
+  rest of niox only ever sees a validated `Config`.
 - One system config file per machine, `/etc/niox/niox.toml`, owned by
-  nioxd. It lists this machine's identity/keypair, known peers
-  (address + public key + role), per-subsystem settings (KM hotkeys,
-  audio mode — follow-focus vs. always-mix), and the web UI auth token.
-  niox-session receives the slices it needs from nioxd over IPC.
+  nioxd (`--config` points it elsewhere, e.g. to run unprivileged against
+  a local file during development). niox-session receives the slices it
+  needs from nioxd over IPC.
+- Layout:
+
+  ```toml
+  [identity]            # generated on first run; only the private key is stored
+  private_key = "<base64 X25519>"
+
+  [transport]
+  port = 4777           # UDP listen port; default port for peer addresses
+
+  [km]
+  hotkey = [125, 41]    # evdev codes: hold the first, press the second; one code = single-key
+
+  [[peer]]
+  name = "desk"
+  address = "192.168.1.20"    # IP or hostname, optional :port
+  public_key = "<base64 X25519>"
+  role = "client"             # the peer's role relative to this machine: "host" or "client"
+  ```
+
+  Later subsystems add their own tables (audio mode, web UI token).
+- First run: if the file is missing, nioxd writes a commented default
+  with a fresh keypair. If it exists without `[identity]` (e.g. a
+  packaged template), one is appended and the rest is left as written.
+  Writes are atomic, mode `0600`, and happen only after the rest of the
+  file has validated.
+- Validation is strict, so mistakes surface at load rather than at
+  runtime: unknown fields are rejected, and errors name the field
+  (`peer[1] ("desk").role: unknown role "server"; ...`). Peer names,
+  public keys, and addresses must each be unique, and no peer may use
+  this machine's own key.
 
 ## Packaging & deployment
 

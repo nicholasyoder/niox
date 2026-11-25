@@ -43,7 +43,7 @@ are and just get checked off; nothing moves into this section.
 
 ## Keyboard/mouse: road to NKMS parity (Linux)
 
-- [ ] **Workspace scaffolding + config** — the Cargo workspace and the
+- [x] **Workspace scaffolding + config** — the Cargo workspace and the
   `niox-config` crate:
   - Workspace root, `crates/`, shared lints and release profile,
     `rust-toolchain.toml` pinned to the Fedora rustc, and `Cargo.lock`

@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+
+[workspace.dependencies]
+niox-config = { path = "crates/niox-config" }
+
+[workspace.lints.rust]
+unsafe_code = "deny" # crates that need FFI opt in locally with #[allow(unsafe_code)]
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# Keep unwinding (the default): Drop guards are what release evdev grabs and
+# tear down uinput devices when a thread panics.
