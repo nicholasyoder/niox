@@ -74,8 +74,10 @@ impl PeerId {
         self.0 as usize
     }
 
-    fn new(index: usize) -> Self {
-        // Peer lists are tiny; EndpointConfig validation caps them.
+    /// The peer at `index` in [`EndpointConfig::peers`] (for
+    /// [`EndpointConfig::from_config`], its index in the config's peers).
+    pub fn new(index: usize) -> Self {
+        // Peer lists are tiny; Endpoint::start caps them.
         Self(u32::try_from(index).unwrap_or(u32::MAX))
     }
 }

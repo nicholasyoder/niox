@@ -142,7 +142,7 @@ are and just get checked off; nothing moves into this section.
   works normally. After Ctrl-C and after a forced panic, nothing stays
   grabbed and `libinput list-devices` shows no leftover virtual device.
 
-- [ ] **KM end-to-end, single client** — the `nioxd` binary as a
+- [x] **KM end-to-end, single client** — the `nioxd` binary as a
   standalone root service:
   - nioxd reads its own `/etc/niox/niox.toml`, joins the transport, and
     runs as host or client per config. It needs no user session.

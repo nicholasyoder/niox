@@ -27,6 +27,17 @@ dedicated key: `ssh -i ~/.ssh/niox_testvm dev@192.168.122.201`.
 Each takes 15-30 minutes (packages come from the Fedora mirrors). Then
 snapshot a clean state: `virsh snapshot-create-as <vm> clean`.
 
+## Deploying nioxd
+
+`tools/dev/deploy.sh -i ~/.ssh/niox_testvm dev@192.168.122.201 ...` builds
+a release nioxd, installs it with the development unit
+(`tools/dev/nioxd.service`, enabled at boot), and restarts it. Put each
+VM's config in `/etc/niox/niox.toml` (mode `0600`) first; nioxd writes
+one with a fresh keypair if it's missing. For held keys, use QMP rather
+than `send-key` (which releases immediately):
+
+    virsh qemu-monitor-command niox-host '{"execute":"input-send-event","arguments":{"events":[{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"a"}}}]}}'
+
 ## Driving tests
 
 All verified working:

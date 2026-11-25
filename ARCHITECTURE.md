@@ -237,6 +237,17 @@ user session.
     `SYN_REPORT` and emits whatever releases and presses bring its key
     state in line with the kernel's; an unplugged device ends with
     releases for everything it had down.
+  - *In nioxd* (`crates/nioxd/src/km`). Each peer is handled by its
+    configured role: for `client` peers this machine is the host, and
+    grabs its keyboards and mice at startup (playing them on a local
+    passthrough device while focus is home); for `host` peers it creates
+    a virtual device per host once that host's capabilities arrive. A
+    machine can be both. On the host, each capture thread runs read →
+    hotkey/focus → encrypt → send under one lock shared with the
+    transport handler and a timer thread (capabilities resends), so
+    frames reach a client in sequence order. On the client, the transport
+    driver thread runs receive → decrypt → uinput write. On an orderly
+    stop the host first releases whatever is held on the focused client.
   - *Cleanup.* The kernel drops a grab and destroys a uinput device
     when its descriptor closes, so any process exit (even `SIGKILL`)
     cleans up. Within a running process, device threads share a
