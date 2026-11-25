@@ -12,6 +12,9 @@ niox testing. Built unattended from the Fedora 45 netinst ISO via kickstart.
 All: 2 vCPU, 4 GiB RAM, 30 GB qcow2, default NAT network (fixed DHCP
 reservations), qemu-guest-agent, UDP 4777 open in firewalld.
 
+VMs are kept shut off; boot them (`virsh start <vm>`) only for a test run
+and shut them down after (`virsh shutdown <vm>`).
+
 Login: user `dev`, password `devpass`, passwordless sudo. SSH with the
 dedicated key: `ssh -i ~/.ssh/niox_testvm dev@192.168.122.201`.
 
