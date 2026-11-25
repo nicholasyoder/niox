@@ -7,17 +7,20 @@
 //! {"cmd":"focus","target":"host"}
 //! {"cmd":"focus","target":{"client":"desk"}}
 //! {"cmd":"subscribe"}
+//! {"cmd":"reload"}
 //! ```
 //!
 //! Everything nioxd sends carries a `type`. `status` answers `status` and
-//! `subscribe` (as the starting snapshot), `ok` and `error` answer the
-//! rest, and `event` lines follow a `subscribe`:
+//! `subscribe` (as the starting snapshot), `reloaded` answers a successful
+//! `reload`, `ok` and `error` answer the rest, and `event` lines follow a
+//! `subscribe`:
 //!
 //! ```json
 //! {"type":"status","version":"0.1.0","protocol":1,"public_key":"…","port":4777,
 //!  "focus":"host","peers":[{"name":"desk","address":"192.168.1.20","role":"client",
 //!  "connected":true,"in_focus_cycle":true}]}
 //! {"type":"ok"}
+//! {"type":"reloaded","changes":["hotkey changed","peer \"desk\" added"]}
 //! {"type":"error","message":"no client named \"desk\""}
 //! {"type":"event","event":"focus","focus":{"client":"desk"}}
 //! {"type":"event","event":"peer","name":"desk",…,"connected":false,"in_focus_cycle":false}
@@ -43,6 +46,10 @@ pub enum Request {
     /// Reply: [`Message::Status`], then an [`Message::Event`] for every
     /// change after it, until the connection closes.
     Subscribe,
+    /// Re-read the config file and apply it, as on `SIGHUP`. Reply:
+    /// [`Message::Reloaded`], or [`Message::Error`] if the config is
+    /// invalid (the running config is kept).
+    Reload,
 }
 
 /// Something nioxd sends: a reply, or an event after a `subscribe`.
@@ -51,7 +58,14 @@ pub enum Request {
 pub enum Message {
     Status(Status),
     Ok,
-    Error { message: String },
+    /// The config was reloaded. `changes` describes what changed, one
+    /// line each; empty if nothing did.
+    Reloaded {
+        changes: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
     Event(Event),
 }
 
@@ -151,6 +165,7 @@ mod tests {
     fn requests() {
         roundtrip(&Request::Status, r#"{"cmd":"status"}"#);
         roundtrip(&Request::Subscribe, r#"{"cmd":"subscribe"}"#);
+        roundtrip(&Request::Reload, r#"{"cmd":"reload"}"#);
         roundtrip(
             &Request::Focus {
                 target: Target::Host,
@@ -175,6 +190,12 @@ mod tests {
             in_focus_cycle: false,
         };
         roundtrip(&Message::Ok, r#"{"type":"ok"}"#);
+        roundtrip(
+            &Message::Reloaded {
+                changes: vec!["hotkey changed".into()],
+            },
+            r#"{"type":"reloaded","changes":["hotkey changed"]}"#,
+        );
         roundtrip(
             &Message::Error {
                 message: "nope".into(),

@@ -182,7 +182,7 @@ are and just get checked off; nothing moves into this section.
   machine, a user in the `niox` group can run `nioxctl status`, and a
   user outside it is refused.
 
-- [ ] **Live config + clean lifecycle** — config changes take effect
+- [x] **Live config + clean lifecycle** — config changes take effect
   without a manual restart (NKMS commit 463a341's behavior):
   - `systemctl reload nioxd` (SIGHUP) and `nioxctl reload` re-read
     config and apply hotkey and peer changes, re-handshaking only where

@@ -1,7 +1,8 @@
 //! The client side: play what each host sends into a virtual device.
 //! Everything here runs on the transport's driver thread.
 
-use niox_config::Role;
+use std::collections::HashMap;
+
 use niox_km::device::VirtualDevice;
 use niox_km::{ClientKm, InputEvent, Message};
 use niox_transport::{Event, Handle, PeerId};
@@ -18,21 +19,29 @@ struct FromHost {
     dev: Option<VirtualDevice>,
 }
 
-/// Every peer whose role is `host`, indexed by peer.
-#[derive(Debug)]
+/// Every peer whose role is `host`.
+#[derive(Debug, Default)]
 pub struct Hosts {
-    hosts: Vec<Option<FromHost>>,
+    hosts: HashMap<PeerId, FromHost>,
     buf: Vec<u8>,
 }
 
 impl Hosts {
-    pub fn new(roles: &[Role]) -> Self {
-        Self {
-            hosts: roles
-                .iter()
-                .map(|&role| (role == Role::Host).then(FromHost::default))
-                .collect(),
-            buf: Vec::new(),
+    /// Sets which peers are hosts (e.g. after a config reload). Hosts kept
+    /// carry on as they were; a new one waits for capabilities. A removed
+    /// host's virtual device is destroyed, which releases anything it
+    /// left held.
+    pub fn set(&mut self, hosts: impl IntoIterator<Item = PeerId>) {
+        let mut old = std::mem::take(&mut self.hosts);
+        for peer in hosts {
+            let host = old.remove(&peer).unwrap_or_default();
+            self.hosts.insert(peer, host);
+        }
+        if !old.is_empty() {
+            info!(
+                hosts = old.len(),
+                "hosts removed; their virtual devices are gone"
+            );
         }
     }
 
@@ -46,7 +55,7 @@ impl Hosts {
                 let releases = host.km.host_down();
                 if !releases.is_empty() {
                     info!(
-                        host = handle.peer_name(peer),
+                        host = %handle.peer_name(peer),
                         keys = releases.len(),
                         "host disconnected; releasing its held keys"
                     );
@@ -55,7 +64,7 @@ impl Hosts {
             }
             Event::Data { peer, body, .. } => match Message::decode(body) {
                 Ok(message) => self.on_message(handle, peer, message),
-                Err(e) => debug!(peer = handle.peer_name(peer), "dropped a KM message: {e}"),
+                Err(e) => debug!(peer = %handle.peer_name(peer), "dropped a KM message: {e}"),
             },
         }
     }
@@ -64,7 +73,7 @@ impl Hosts {
         let Some(host) = self.host(peer) else { return };
         let Some(out) = host.km.on_message(message) else {
             debug!(
-                peer = handle.peer_name(peer),
+                peer = %handle.peer_name(peer),
                 "unexpected KM message from a host"
             );
             return;
@@ -80,14 +89,14 @@ impl Hosts {
             match created {
                 Ok(dev) => {
                     if dev.is_some() {
-                        info!(host = handle.peer_name(peer), "virtual device created");
+                        info!(host = %handle.peer_name(peer), "virtual device created");
                     }
                     // The old device, if any, goes away here.
                     host.dev = dev;
                 }
                 Err(e) => {
                     error!(
-                        host = handle.peer_name(peer),
+                        host = %handle.peer_name(peer),
                         "{:#}",
                         anyhow::Error::from(e)
                     );
@@ -105,7 +114,7 @@ impl Hosts {
     }
 
     fn host(&mut self, peer: PeerId) -> Option<&mut FromHost> {
-        self.hosts.get_mut(peer.index())?.as_mut()
+        self.hosts.get_mut(&peer)
     }
 }
 
@@ -117,7 +126,7 @@ fn play(host: &mut FromHost, events: &[InputEvent], handle: &Handle, peer: PeerI
         && let Err(e) = dev.play(events)
     {
         warn!(
-            host = handle.peer_name(peer),
+            host = %handle.peer_name(peer),
             "{:#}",
             anyhow::Error::from(e)
         );

@@ -76,6 +76,26 @@ impl<P: Copy + Eq> FocusRing<P> {
         None
     }
 
+    /// Replaces the configured clients (e.g. after a config reload), in
+    /// their new cycling order. Clients kept keep their availability; new
+    /// ones start unavailable. Returns the new focus if this moved it
+    /// (only when the focused client was removed: focus returns to the
+    /// host).
+    pub fn set_clients(&mut self, clients: impl IntoIterator<Item = P>) -> Option<Target<P>> {
+        let mut list: Vec<(P, bool)> = Vec::new();
+        for p in clients {
+            if !list.iter().any(|&(q, _)| q == p) {
+                let up = self.is_available(p);
+                list.push((p, up));
+            }
+        }
+        self.clients = list;
+        match self.focused {
+            Target::Client(c) if !self.is_available(c) => self.set(Target::Host),
+            _ => None,
+        }
+    }
+
     /// Advances focus to the next target in the cycle, wrapping back to the
     /// host. Returns the new focus if it changed (with no clients available,
     /// it stays on the host).
@@ -152,6 +172,31 @@ mod tests {
     fn skips_unavailable_clients() {
         let mut r = ring(&['a', 'c']);
         assert_eq!(cycle(&mut r, 3), [Client('a'), Client('c'), Host]);
+    }
+
+    #[test]
+    fn set_clients_keeps_availability_and_focus_by_identity() {
+        let mut r = ring(&['a', 'c']);
+        r.advance();
+        r.advance();
+        assert_eq!(r.focused(), Client('c'));
+        // Reordered, 'b' dropped, 'd' added: focus stays on 'c', and the
+        // cycle follows the new order.
+        assert_eq!(r.set_clients(['c', 'd', 'a']), None);
+        assert_eq!(r.focused(), Client('c'));
+        assert!(!r.is_available('d'));
+        assert_eq!(cycle(&mut r, 3), [Client('a'), Host, Client('c')]);
+        assert_eq!(r.clients().collect::<Vec<_>>(), ['c', 'd', 'a']);
+    }
+
+    #[test]
+    fn removing_the_focused_client_returns_focus_to_the_host() {
+        let mut r = ring(&['a', 'b']);
+        r.advance();
+        assert_eq!(r.set_clients(['b']), Some(Host));
+        assert_eq!(r.focused(), Host);
+        assert_eq!(r.set_clients([]), None);
+        assert_eq!(r.advance(), None);
     }
 
     #[test]

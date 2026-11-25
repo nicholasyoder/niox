@@ -46,6 +46,18 @@ struct Client<P> {
     pending: Option<Pending>,
 }
 
+impl<P> Client<P> {
+    fn new(peer: P) -> Self {
+        Self {
+            peer,
+            up: false,
+            held: HeldKeys::new(),
+            next_seq: 0,
+            pending: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Pending {
     generation: u32,
@@ -65,6 +77,9 @@ struct Pending {
 #[derive(Debug)]
 pub struct HostKm<P> {
     switcher: Switcher,
+    hotkey: Hotkey,
+    /// A new hotkey waiting for the current one's keys to be released.
+    next_hotkey: Option<Hotkey>,
     ring: FocusRing<P>,
     clients: Vec<Client<P>>,
     host_held: HeldKeys,
@@ -82,18 +97,11 @@ impl<P: Copy + Eq> HostKm<P> {
     ) -> Result<Self, CapabilitiesTooLarge> {
         check_caps(&caps)?;
         let ring = FocusRing::new(clients);
-        let clients = ring
-            .clients()
-            .map(|peer| Client {
-                peer,
-                up: false,
-                held: HeldKeys::new(),
-                next_seq: 0,
-                pending: None,
-            })
-            .collect();
+        let clients = ring.clients().map(Client::new).collect();
         Ok(Self {
             switcher: Switcher::new(hotkey),
+            hotkey,
+            next_hotkey: None,
             ring,
             clients,
             host_held: HeldKeys::new(),
@@ -104,6 +112,67 @@ impl<P: Copy + Eq> HostKm<P> {
 
     pub fn focus(&self) -> Target<P> {
         self.ring.focused()
+    }
+
+    /// The hotkey in effect (see [`HostKm::set_hotkey`]).
+    pub fn hotkey(&self) -> Hotkey {
+        self.hotkey
+    }
+
+    /// Changes the focus-switch hotkey. If one of the current hotkey's
+    /// keys is held, the change waits until both are released, so a
+    /// half-finished press is never judged by the new hotkey.
+    pub fn set_hotkey(&mut self, hotkey: Hotkey) {
+        self.next_hotkey = Some(hotkey);
+        self.apply_hotkey();
+    }
+
+    fn apply_hotkey(&mut self) {
+        if self.switcher.is_idle()
+            && let Some(hotkey) = self.next_hotkey.take()
+        {
+            self.hotkey = hotkey;
+            self.switcher = Switcher::new(hotkey);
+        }
+    }
+
+    /// Replaces the configured clients (after a config reload), in their
+    /// new cycling order, with whether each one's session is up now.
+    ///
+    /// A removed client that has focus first gets releases for everything
+    /// held on it, and focus returns to the host. A new client whose
+    /// session is up starts the capabilities exchange at once, as on
+    /// [`HostKm::peer_up`]; one that isn't waits for it. Clients kept
+    /// carry on as they were.
+    pub fn set_clients(
+        &mut self,
+        clients: impl IntoIterator<Item = (P, bool)>,
+        now: Instant,
+        out: &mut Vec<HostOutput<P>>,
+    ) {
+        let clients: Vec<(P, bool)> = clients.into_iter().collect();
+        let focus = self.focus();
+        if let Target::Client(peer) = focus
+            && !clients.iter().any(|&(p, _)| p == peer)
+        {
+            self.release(focus, out);
+        }
+        if let Some(new) = self.ring.set_clients(clients.iter().map(|&(p, _)| p)) {
+            out.push(HostOutput::Focus(new));
+        }
+
+        let mut old = std::mem::take(&mut self.clients);
+        for peer in self.ring.clients().collect::<Vec<_>>() {
+            match old.iter().position(|c| c.peer == peer) {
+                Some(i) => self.clients.push(old.swap_remove(i)),
+                None => {
+                    self.clients.push(Client::new(peer));
+                    if clients.iter().any(|&(p, up)| p == peer && up) {
+                        self.peer_up(peer, now, out);
+                    }
+                }
+            }
+        }
     }
 
     /// The capabilities clients are sent.
@@ -146,6 +215,9 @@ impl<P: Copy + Eq> HostKm<P> {
                     self.release(old, out);
                     out.push(HostOutput::Focus(new));
                 }
+            }
+            if self.next_hotkey.is_some() {
+                self.apply_hotkey();
             }
         }
         self.emit(self.focus(), current, out);
@@ -477,6 +549,105 @@ mod tests {
         assert_eq!(r.hotkey(), [Focus(Client('c'))]);
         assert_eq!(r.hotkey(), [Focus(Host)]);
         assert_eq!(r.km.ready_clients().collect::<Vec<_>>(), ['a', 'c']);
+    }
+
+    #[test]
+    fn new_hotkey_waits_for_the_old_ones_keys_to_be_released() {
+        let mut r = Rig::new(&['a']);
+        r.connect('a');
+        // Changed mid-press: the old hotkey still completes.
+        r.press(META);
+        r.km.set_hotkey(Hotkey {
+            key1: SHIFT,
+            key2: None,
+        });
+        assert_eq!(r.km.hotkey().key1, META);
+        r.press(GRAVE);
+        r.release(GRAVE);
+        assert_eq!(r.release(META), [Focus(Client('a'))]);
+        assert_eq!(r.km.hotkey().key1, SHIFT);
+
+        // Now Shift alone switches, and Meta+Grave is ordinary typing.
+        assert_eq!(r.press(SHIFT), []);
+        assert_eq!(r.release(SHIFT), [Focus(Host)]);
+        let typed: Vec<_> = r
+            .hotkey()
+            .into_iter()
+            .filter(|o| matches!(o, Focus(_)))
+            .collect();
+        assert!(typed.is_empty());
+    }
+
+    #[test]
+    fn replayed_key1_uses_the_old_hotkey_when_it_changes_on_release() {
+        let mut r = Rig::new(&['a']);
+        r.press(META);
+        r.km.set_hotkey(Hotkey {
+            key1: SHIFT,
+            key2: None,
+        });
+        // Meta alone, released: its held-back press is replayed as Meta.
+        assert_eq!(
+            r.release(META),
+            [Local(vec![key(META, KEY_DOWN), key(META, KEY_UP)])]
+        );
+        assert_eq!(r.km.hotkey().key1, SHIFT);
+    }
+
+    #[test]
+    fn set_clients_releases_a_removed_focused_client() {
+        let mut r = Rig::new(&['a', 'b']);
+        r.connect('a');
+        r.connect('b');
+        r.hotkey();
+        r.press(A);
+        let mut out = vec![];
+        r.km.set_clients([('b', true)], r.now, &mut out);
+        assert_eq!(sent(&out), [('a', vec![key(A, KEY_UP)])]);
+        assert_eq!(out.last(), Some(&Focus(Host)));
+        assert_eq!(r.km.ready_clients().collect::<Vec<_>>(), ['b']);
+        // 'a' is gone: its messages and events are ignored.
+        assert!(
+            r.km.on_message('a', &Message::CapabilitiesAck { generation: 1 })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn set_clients_adds_and_reorders_keeping_sessions() {
+        let mut r = Rig::new(&['a', 'b']);
+        r.connect('a');
+        r.connect('b');
+        r.hotkey();
+        assert_eq!(r.km.focus(), Client('a'));
+
+        // 'c' is already up (its session survived, or it connected for
+        // another reason): it gets capabilities at once. 'd' isn't.
+        let mut out = vec![];
+        r.km.set_clients(
+            [('c', true), ('b', true), ('a', true), ('d', false)],
+            r.now,
+            &mut out,
+        );
+        let [
+            Send {
+                peer: 'c',
+                message: Message::Capabilities { .. },
+            },
+        ] = &out[..]
+        else {
+            panic!("expected caps for 'c' only, got {out:?}");
+        };
+        assert_eq!(r.km.focus(), Client('a'));
+        r.km.on_message('c', &Message::CapabilitiesAck { generation: 1 })
+            .unwrap();
+        // The cycle follows the new order: a → host → c → b → a.
+        assert_eq!(r.hotkey(), [Focus(Host)]);
+        assert_eq!(r.hotkey(), [Focus(Client('c'))]);
+        assert_eq!(r.hotkey(), [Focus(Client('b'))]);
+        assert_eq!(r.hotkey(), [Focus(Client('a'))]);
+        r.km.peer_up('d', r.now, &mut vec![]);
+        assert!(r.km.next_deadline().is_some());
     }
 
     #[test]

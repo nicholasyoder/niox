@@ -35,6 +35,9 @@ enum Command {
         /// A client's name from the config, or `host` for this machine.
         target: String,
     },
+    /// Have nioxd re-read its config and apply it (like `systemctl reload
+    /// nioxd`), and print what changed.
+    Reload,
     /// Print focus and peer changes as they happen, until interrupted.
     Watch {
         /// One JSON object per line: the status, then each event.
@@ -80,6 +83,15 @@ fn run(args: &Args) -> anyhow::Result<()> {
                 Target::Client(target.clone())
             };
             client.focus(target)?;
+        }
+        Command::Reload => {
+            let changes = client.reload()?;
+            if changes.is_empty() {
+                writeln!(out, "reloaded; nothing changed")?;
+            }
+            for change in changes {
+                writeln!(out, "{change}")?;
+            }
         }
         Command::Watch { json } => {
             let (status, events) = client.subscribe()?;

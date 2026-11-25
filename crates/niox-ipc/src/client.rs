@@ -10,6 +10,9 @@ use crate::{read_line, write_line};
 
 /// How long a request waits for its reply.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a reload waits: applying one can mean restarting the
+/// transport and regrabbing devices.
+const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -81,6 +84,23 @@ impl Client {
     pub fn focus(&mut self, target: Target) -> Result<(), ClientError> {
         match self.request(&Request::Focus { target })? {
             Message::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Has nioxd re-read its config. Returns what changed, one line each.
+    pub fn reload(&mut self) -> Result<Vec<String>, ClientError> {
+        let socket = self.reader.get_ref();
+        socket
+            .set_read_timeout(Some(RELOAD_TIMEOUT))
+            .map_err(ClientError::Io)?;
+        let reply = self.request(&Request::Reload);
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(REPLY_TIMEOUT))
+            .map_err(ClientError::Io)?;
+        match reply? {
+            Message::Reloaded { changes } => Ok(changes),
             other => Err(unexpected(other)),
         }
     }

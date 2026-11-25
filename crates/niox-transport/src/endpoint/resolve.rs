@@ -8,46 +8,48 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use niox_config::PeerAddress;
 use tracing::{debug, info};
 
-use super::{PeerSpec, Shared, Timers, lock};
+use super::{SharedPeer, Timers, lock};
 
 /// Retry interval while a hostname doesn't resolve.
 const RETRY_FAILED: Duration = Duration::from_secs(5);
 
-/// Dropping this stops the resolver threads (once any lookup in progress
-/// returns; they're never joined).
-pub(super) struct Stop(#[allow(dead_code)] Vec<mpsc::Sender<()>>);
+/// Dropping this stops the resolver thread (once any lookup in progress
+/// returns; it's never joined).
+pub(super) struct Stop(#[allow(dead_code)] mpsc::Sender<()>);
 
+/// Fills in `peer`'s configured address: at once for an IP literal, or
+/// from a new resolver thread for a hostname, whose [`Stop`] is returned.
+/// The thread also exits once `peer` is dropped.
 pub(super) fn start(
-    shared: &Arc<Shared>,
-    peers: &[PeerSpec],
+    v6: bool,
+    peer: &Arc<SharedPeer>,
+    name: &str,
+    address: &PeerAddress,
     timers: Timers,
 ) -> io::Result<Option<Stop>> {
-    let mut stops = Vec::new();
-    for (index, spec) in peers.iter().enumerate() {
-        let host = spec.address.host();
-        let port = spec.address.port();
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            *lock(&shared.peers[index].configured) = Some(SocketAddr::new(ip, port));
-            continue;
-        }
-
-        let (stop, stopped) = mpsc::channel::<()>();
-        let shared = Arc::downgrade(shared);
-        let name = spec.name.clone();
-        let interval = timers.resolve_interval;
-        std::thread::Builder::new()
-            .name(format!("niox-resolve-{name}"))
-            .spawn(move || resolve_loop(&shared, index, &name, &host, port, interval, &stopped))?;
-        stops.push(stop);
+    let host = address.host();
+    let port = address.port();
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        *lock(&peer.configured) = Some(SocketAddr::new(ip, port));
+        return Ok(None);
     }
-    Ok((!stops.is_empty()).then_some(Stop(stops)))
+
+    let (stop, stopped) = mpsc::channel::<()>();
+    let peer = Arc::downgrade(peer);
+    let name = name.to_owned();
+    let interval = timers.resolve_interval;
+    std::thread::Builder::new()
+        .name(format!("niox-resolve-{name}"))
+        .spawn(move || resolve_loop(v6, &peer, &name, &host, port, interval, &stopped))?;
+    Ok(Some(Stop(stop)))
 }
 
 fn resolve_loop(
-    shared: &Weak<Shared>,
-    index: usize,
+    v6: bool,
+    peer: &Weak<SharedPeer>,
     name: &str,
     host: &str,
     port: u16,
@@ -57,10 +59,16 @@ fn resolve_loop(
     let mut last = None;
     loop {
         let resolved = resolve(host, port);
-        let Some(shared) = shared.upgrade() else {
+        // Stopped while resolving: don't overwrite a newer address.
+        if matches!(
+            stopped.try_recv(),
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected)
+        ) {
+            return;
+        }
+        let Some(peer) = peer.upgrade() else {
             return;
         };
-        let v6 = shared.v6;
         let addr = resolved.and_then(|addrs| {
             // Prefer IPv4: LAN hostnames often also resolve to link-local
             // IPv6 addresses that are useless without a scope.
@@ -72,12 +80,12 @@ fn resolve_loop(
                 if last != Some(addr) {
                     info!(peer = name, %host, %addr, "resolved peer address");
                 }
-                *lock(&shared.peers[index].configured) = Some(addr);
+                *lock(&peer.configured) = Some(addr);
             }
             None => debug!(peer = name, %host, "peer hostname did not resolve"),
         }
         last = addr.or(last);
-        drop(shared);
+        drop(peer);
 
         let wait = if addr.is_some() {
             interval

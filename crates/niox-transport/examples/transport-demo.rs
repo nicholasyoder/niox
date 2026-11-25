@@ -201,10 +201,10 @@ fn listen(socket: std::net::UdpSocket, config: EndpointConfig) -> anyhow::Result
 
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
-            for (id, s) in handle.peers().zip(seq.iter_mut()) {
+            for (id, s) in handle.peers().into_iter().zip(seq.iter_mut()) {
                 if s.received + s.missing > 0 {
                     info!(
-                        peer = handle.peer_name(id),
+                        peer = %handle.peer_name(id),
                         received = s.received,
                         missing = s.missing,
                         out_of_order = s.late,

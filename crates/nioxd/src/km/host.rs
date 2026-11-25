@@ -66,10 +66,7 @@ impl State {
                     send(handle, &mut self.buf, peer, &message);
                 }
                 HostOutput::Focus(target) => {
-                    let target = match target {
-                        Target::Host => ipc::Target::Host,
-                        Target::Client(peer) => ipc::Target::Client(handle.peer_name(peer).into()),
-                    };
+                    let target = ipc_target(handle, target);
                     match &target {
                         ipc::Target::Host => info!(focus = "host", "focus moved"),
                         ipc::Target::Client(name) => info!(focus = name, "focus moved"),
@@ -122,15 +119,11 @@ impl State {
     }
 }
 
-/// Moves focus on a control request. Errors are for the requester.
-pub fn set_focus(
-    state: &Mutex<State>,
-    handle: &Handle,
-    target: Target<PeerId>,
-) -> Result<(), Unavailable> {
-    let mut result = Ok(());
-    lock(state).step(handle, |km, out| result = km.set_focus(target, out));
-    result
+fn ipc_target(handle: &Handle, target: Target<PeerId>) -> ipc::Target {
+    match target {
+        Target::Host => ipc::Target::Host,
+        Target::Client(peer) => ipc::Target::Client(handle.peer_name(peer).to_string()),
+    }
 }
 
 /// Handles a transport event for a peer whose role is `client`.
@@ -143,7 +136,7 @@ pub fn on_event(state: &Mutex<State>, handle: &Handle, event: Event<'_>) {
             s.step(handle, |km, out| km.peer_down(peer, out));
             if was_ready {
                 info!(
-                    client = handle.peer_name(peer),
+                    client = %handle.peer_name(peer),
                     "client left the focus cycle"
                 );
             }
@@ -152,17 +145,17 @@ pub fn on_event(state: &Mutex<State>, handle: &Handle, event: Event<'_>) {
             let message = match Message::decode(body) {
                 Ok(m) => m,
                 Err(e) => {
-                    debug!(peer = handle.peer_name(peer), "dropped a KM message: {e}");
+                    debug!(peer = %handle.peer_name(peer), "dropped a KM message: {e}");
                     return;
                 }
             };
             let was_ready = s.is_ready(peer);
             if let Err(e) = s.km.on_message(peer, &message) {
-                debug!(peer = handle.peer_name(peer), ?message, "{e}");
+                debug!(peer = %handle.peer_name(peer), ?message, "{e}");
             }
             if !was_ready && s.is_ready(peer) {
                 info!(
-                    client = handle.peer_name(peer),
+                    client = %handle.peer_name(peer),
                     "client joined the focus cycle"
                 );
             }
@@ -178,14 +171,18 @@ pub struct Host {
     /// at startup, until [`Host::start`] hands them to the devices thread.
     startup: Option<(Option<Monitor>, Vec<InputDevice>)>,
     handle: Option<Handle>,
+    /// Stops this host side's threads, independently of the rest of
+    /// nioxd (e.g. when a reload leaves no clients).
+    stop: Stop,
     threads: Vec<(String, JoinHandle<()>)>,
 }
 
 impl Host {
     /// Finds the local keyboards and mice and creates the passthrough
     /// device, without grabbing anything yet. Having none is fine: they're
-    /// picked up when plugged in.
-    pub fn new(hotkey: Hotkey, clients: Vec<PeerId>, publisher: Publisher) -> anyhow::Result<Self> {
+    /// picked up when plugged in. There are no clients until
+    /// [`Host::set_clients`].
+    pub fn new(hotkey: Hotkey, publisher: Publisher) -> anyhow::Result<Self> {
         // Watch before scanning, so nothing plugged in between is missed.
         let monitor = match Monitor::open() {
             Ok(m) => Some(m),
@@ -205,7 +202,7 @@ impl Host {
             info!(path = %dev.path().display(), name = dev.name(), "found input device");
         }
         let caps = union_capabilities(&devices);
-        let km = HostKm::new(hotkey, clients, caps.clone())?;
+        let km = HostKm::new(hotkey, [], caps.clone())?;
         let local = if caps.is_empty() {
             None
         } else {
@@ -221,6 +218,7 @@ impl Host {
             })),
             startup: Some((monitor, devices)),
             handle: None,
+            stop: Stop::new().context("creating the host's stop signal")?,
             threads: Vec::new(),
         })
     }
@@ -229,15 +227,45 @@ impl Host {
         Arc::clone(&self.state)
     }
 
+    /// Replaces the clients, in focus-cycling order, with whether each
+    /// one's session is up (see [`HostKm::set_clients`]).
+    pub fn set_clients(&self, handle: &Handle, clients: Vec<(PeerId, bool)>) {
+        lock(&self.state).step(handle, |km, out| {
+            km.set_clients(clients, Instant::now(), out);
+        });
+    }
+
+    pub fn set_hotkey(&self, hotkey: Hotkey) {
+        lock(&self.state).km.set_hotkey(hotkey);
+    }
+
+    /// Moves focus on a control request. Errors are for the requester.
+    pub fn set_focus(&self, handle: &Handle, target: Target<PeerId>) -> Result<(), Unavailable> {
+        let mut result = Ok(());
+        lock(&self.state).step(handle, |km, out| result = km.set_focus(target, out));
+        result
+    }
+
+    pub fn focus(&self, handle: &Handle) -> ipc::Target {
+        ipc_target(handle, lock(&self.state).km.focus())
+    }
+
+    pub fn is_ready(&self, peer: PeerId) -> bool {
+        lock(&self.state).is_ready(peer)
+    }
+
     /// Starts the devices thread, which grabs every device on its own
     /// capture thread and picks up devices plugged in later, and the timer
-    /// thread that resends unacknowledged capabilities.
-    pub fn start(&mut self, handle: Handle, stop: &Stop) -> anyhow::Result<()> {
+    /// thread that resends unacknowledged capabilities. They run until
+    /// [`Host::shutdown`]; if one panics, it triggers `fatal`.
+    pub fn start(&mut self, handle: Handle, fatal: &Stop) -> anyhow::Result<()> {
         let (monitor, initial) = self.startup.take().unwrap_or_default();
+        let stop = &self.stop;
         let devices = Devices {
             state: Arc::clone(&self.state),
             handle: handle.clone(),
             stop: stop.clone(),
+            fatal: fatal.clone(),
             captures: Vec::new(),
         };
         let thread = thread::Builder::new()
@@ -246,19 +274,21 @@ impl Host {
             .context("spawning the KM devices thread")?;
         self.threads.push(("km devices".into(), thread));
 
-        let (state, timer_handle, stop) = (Arc::clone(&self.state), handle.clone(), stop.clone());
+        let (state, timer_handle) = (Arc::clone(&self.state), handle.clone());
+        let (stop, fatal) = (stop.clone(), fatal.clone());
         let thread = thread::Builder::new()
             .name("km timers".into())
-            .spawn(move || timers(&state, &timer_handle, &stop))
+            .spawn(move || timers(&state, &timer_handle, &stop, &fatal))
             .context("spawning the KM timer thread")?;
         self.threads.push(("km timers".into(), thread));
         self.handle = Some(handle);
         Ok(())
     }
 
-    /// Joins every thread (the stop signal must already have triggered),
-    /// then releases whatever is held on the focused client.
+    /// Stops and joins every thread (releasing the grabs), then releases
+    /// whatever is held on the focused client.
     pub fn shutdown(self) {
+        self.stop.trigger();
         for (name, thread) in self.threads {
             if thread.join().is_err() {
                 error!("{name} panicked");
@@ -281,6 +311,7 @@ struct Devices {
     state: Arc<Mutex<State>>,
     handle: Handle,
     stop: Stop,
+    fatal: Stop,
     captures: Vec<CaptureThread>,
 }
 
@@ -295,7 +326,7 @@ struct CaptureThread {
 
 impl Devices {
     fn run(mut self, monitor: Option<Monitor>, initial: Vec<InputDevice>) {
-        let _stop_on_panic = self.stop.panic_guard();
+        let _fatal_on_panic = self.fatal.panic_guard();
         for dev in initial {
             self.add(dev);
         }
@@ -392,14 +423,11 @@ impl Devices {
             "capture {}",
             path.file_name().unwrap_or_default().to_string_lossy()
         );
-        let (state, handle, stop) = (
-            Arc::clone(&self.state),
-            self.handle.clone(),
-            self.stop.clone(),
-        );
+        let (state, handle) = (Arc::clone(&self.state), self.handle.clone());
+        let (stop, fatal) = (self.stop.clone(), self.fatal.clone());
         match thread::Builder::new()
             .name(name)
-            .spawn(move || capture(dev, &state, &handle, &stop))
+            .spawn(move || capture(dev, &state, &handle, &stop, &fatal))
         {
             Ok(thread) => {
                 // Forget threads that have finished.
@@ -416,8 +444,8 @@ impl Devices {
 
 /// One device's capture thread: grab, then feed every frame to the KM
 /// state until `stop` triggers or the device goes away.
-fn capture(dev: InputDevice, state: &Mutex<State>, handle: &Handle, stop: &Stop) {
-    let _stop_on_panic = stop.panic_guard();
+fn capture(dev: InputDevice, state: &Mutex<State>, handle: &Handle, stop: &Stop, fatal: &Stop) {
+    let _fatal_on_panic = fatal.panic_guard();
     let path = dev.path().to_owned();
     let mut capture = match Capture::grab(dev, SETTLE, stop) {
         Ok(c) => c,
@@ -438,8 +466,8 @@ fn capture(dev: InputDevice, state: &Mutex<State>, handle: &Handle, stop: &Stop)
 }
 
 /// Resends capabilities whose acknowledgment is overdue.
-fn timers(state: &Mutex<State>, handle: &Handle, stop: &Stop) {
-    let _stop_on_panic = stop.panic_guard();
+fn timers(state: &Mutex<State>, handle: &Handle, stop: &Stop, fatal: &Stop) {
+    let _fatal_on_panic = fatal.panic_guard();
     loop {
         let wait = lock(state).km.next_deadline().map_or(TICK, |due| {
             due.saturating_duration_since(Instant::now()).min(TICK)

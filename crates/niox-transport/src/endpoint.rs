@@ -45,17 +45,27 @@
 //! no index, are tried first against the peer whose address they came from
 //! and then against every other peer's key. Anything that doesn't
 //! authenticate is dropped without a reply.
+//!
+//! # Changing peers
+//!
+//! Peers can be added, removed, and updated while the endpoint runs
+//! ([`Endpoint::add_peer`], [`Endpoint::remove_peer`],
+//! [`Endpoint::update_peer`]), for a config reload. Every other peer's
+//! session carries on untouched. A [`PeerId`] is never reused, so an id
+//! held for a removed peer can't reach a different one.
 
 mod driver;
 mod resolve;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard};
+use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use niox_config::{Config, PeerAddress, PrivateKey, PublicKey};
@@ -64,8 +74,9 @@ use tracing::warn;
 
 use crate::{Error, MAX_DATAGRAM, Payload, Session, Subsystem};
 
-/// Identifies one configured peer of an [`Endpoint`]: its position in
-/// [`EndpointConfig::peers`].
+/// Identifies one peer of an [`Endpoint`]. The peers in
+/// [`EndpointConfig::peers`] are numbered from 0 in order; each peer added
+/// later gets the next number. Ids are never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PeerId(u32);
 
@@ -77,7 +88,7 @@ impl PeerId {
     /// The peer at `index` in [`EndpointConfig::peers`] (for
     /// [`EndpointConfig::from_config`], its index in the config's peers).
     pub fn new(index: usize) -> Self {
-        // Peer lists are tiny; Endpoint::start caps them.
+        // Peer counts are tiny; the endpoint caps them.
         Self(u32::try_from(index).unwrap_or(u32::MAX))
     }
 }
@@ -190,8 +201,12 @@ pub enum SendError {
 pub struct Endpoint {
     handle: Handle,
     driver: Option<JoinHandle<()>>,
-    /// Dropping this tells the resolver threads to exit.
-    _resolvers: Option<resolve::Stop>,
+    driver_id: ThreadId,
+    commands: mpsc::Sender<driver::Command>,
+    timers: Timers,
+    /// Per peer configured by hostname; dropping one stops its resolver.
+    resolvers: HashMap<PeerId, resolve::Stop>,
+    next_id: usize,
 }
 
 impl fmt::Debug for Endpoint {
@@ -201,6 +216,26 @@ impl fmt::Debug for Endpoint {
             .finish_non_exhaustive()
     }
 }
+
+/// Why changing an [`Endpoint`]'s peers failed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PeerError {
+    #[error("no such peer")]
+    NoSuchPeer,
+    #[error("too many peers")]
+    TooMany,
+    #[error("a peer with that public key is already configured")]
+    DuplicateKey,
+    #[error("starting the peer's address resolver")]
+    Resolver(#[source] io::Error),
+    /// The driver thread is gone (it panicked).
+    #[error("the transport driver thread has stopped")]
+    Stopped,
+}
+
+/// Most peers an endpoint takes over its lifetime, counting removed ones.
+const MAX_PEER_IDS: usize = u16::MAX as usize;
 
 impl Endpoint {
     /// Binds the transport's UDP socket on every interface: dual-stack
@@ -227,44 +262,148 @@ impl Endpoint {
     where
         F: FnMut(&Handle, Event<'_>) + Send + 'static,
     {
-        if config.peers.len() > u16::MAX.into() {
+        if config.peers.len() > MAX_PEER_IDS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "too many peers",
             ));
         }
         let local_addr = socket.local_addr()?;
+        let peers: Vec<Arc<SharedPeer>> = config
+            .peers
+            .iter()
+            .map(|spec| Arc::new(SharedPeer::new(&spec.name)))
+            .collect();
         let shared = Arc::new(Shared {
             v6: local_addr.is_ipv6(),
             local_addr,
             socket,
             stopped: AtomicBool::new(false),
             epoch: Instant::now(),
-            peers: config
-                .peers
-                .iter()
-                .map(|spec| SharedPeer {
-                    name: spec.name.clone(),
-                    up: AtomicBool::new(false),
-                    route: Mutex::new(Route::default()),
-                    configured: Mutex::new(None),
-                    last_sent: AtomicU64::new(0),
-                })
-                .collect(),
+            peers: RwLock::new(peers.iter().cloned().map(Some).collect()),
         });
         let handle = Handle { shared };
 
-        let resolvers = resolve::start(&handle.shared, &config.peers, config.timers)?;
-        let driver = driver::Driver::new(handle.clone(), config, handler);
+        let mut resolvers = HashMap::new();
+        for (index, (spec, peer)) in config.peers.iter().zip(&peers).enumerate() {
+            if let Some(stop) = resolve::start(
+                handle.shared.v6,
+                peer,
+                &spec.name,
+                &spec.address,
+                config.timers,
+            )? {
+                resolvers.insert(PeerId::new(index), stop);
+            }
+        }
+        let (commands, command_rx) = mpsc::channel();
+        let timers = config.timers;
+        let next_id = config.peers.len();
+        let driver = driver::Driver::new(handle.clone(), config, peers, command_rx, handler);
         let driver = std::thread::Builder::new()
             .name("niox-transport".into())
             .spawn(move || driver.run())?;
 
         Ok(Self {
             handle,
+            driver_id: driver.thread().id(),
             driver: Some(driver),
-            _resolvers: resolvers,
+            commands,
+            timers,
+            resolvers,
+            next_id,
         })
+    }
+
+    /// The id the next [`add_peer`](Self::add_peer) will return, so a
+    /// caller can be ready for the new peer's events before it's added.
+    pub fn next_peer_id(&self) -> PeerId {
+        PeerId::new(self.next_id)
+    }
+
+    /// Adds a peer, which starts handshaking at once. Fails if its public
+    /// key is already in use.
+    ///
+    /// This and the other peer-changing methods wait for the driver
+    /// thread, so they must not be called from the handler, nor while
+    /// holding anything the handler waits for.
+    pub fn add_peer(&mut self, spec: PeerSpec) -> Result<PeerId, PeerError> {
+        if self.next_id >= MAX_PEER_IDS {
+            return Err(PeerError::TooMany);
+        }
+        let id = PeerId::new(self.next_id);
+        let peer = Arc::new(SharedPeer::new(&spec.name));
+        let resolver = resolve::start(
+            self.handle.shared.v6,
+            &peer,
+            &spec.name,
+            &spec.address,
+            self.timers,
+        )
+        .map_err(PeerError::Resolver)?;
+        self.command(|reply| driver::Command::Add {
+            id,
+            spec: spec.clone(),
+            peer,
+            reply,
+        })??;
+        self.next_id += 1;
+        if let Some(stop) = resolver {
+            self.resolvers.insert(id, stop);
+        }
+        Ok(id)
+    }
+
+    /// Removes a peer. If it was up, the handler first gets its
+    /// [`Event::Down`].
+    pub fn remove_peer(&mut self, id: PeerId) -> Result<(), PeerError> {
+        self.command(|reply| driver::Command::Remove { id, reply })??;
+        self.resolvers.remove(&id);
+        Ok(())
+    }
+
+    /// Renames a peer and changes its configured address, keeping its
+    /// session. (A different public key is a different peer: remove the
+    /// old one and add the new.) While the peer is down, the next
+    /// handshake goes out at once.
+    pub fn update_peer(
+        &mut self,
+        id: PeerId,
+        name: &str,
+        address: PeerAddress,
+    ) -> Result<(), PeerError> {
+        let peer = self.handle.shared.peer(id).ok_or(PeerError::NoSuchPeer)?;
+        let name: Arc<str> = name.into();
+        *lock(&peer.name) = Arc::clone(&name);
+        // Replacing the resolver stops the old one.
+        *lock(&peer.configured) = None;
+        self.resolvers.remove(&id);
+        if let Some(stop) =
+            resolve::start(self.handle.shared.v6, &peer, &name, &address, self.timers)
+                .map_err(PeerError::Resolver)?
+        {
+            self.resolvers.insert(id, stop);
+        }
+        self.command(|reply| driver::Command::Update { id, name, reply })?
+    }
+
+    /// Sends a command to the driver thread and waits for its reply.
+    fn command<T>(
+        &self,
+        make: impl FnOnce(mpsc::SyncSender<T>) -> driver::Command,
+    ) -> Result<T, PeerError> {
+        debug_assert!(
+            std::thread::current().id() != self.driver_id,
+            "changing peers from the transport handler would deadlock"
+        );
+        let (reply, result) = mpsc::sync_channel(1);
+        self.commands
+            .send(make(reply))
+            .map_err(|_| PeerError::Stopped)?;
+        let shared = &self.handle.shared;
+        // Wake the driver out of recv; see Drop.
+        let _ = shared.send_to(&[], shared.wake_addr());
+        result.recv().map_err(|_| PeerError::Stopped)
     }
 
     /// A cloneable handle for sending from other threads.
@@ -294,7 +433,7 @@ impl Drop for Endpoint {
         {
             warn!("transport driver thread panicked");
         }
-        for peer in &shared.peers {
+        for peer in read(&shared.peers).iter().flatten() {
             peer.up.store(false, Ordering::Relaxed);
             *lock(&peer.route) = Route::default();
         }
@@ -312,7 +451,7 @@ impl fmt::Debug for Handle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Handle")
             .field("local_addr", &self.shared.local_addr)
-            .field("peers", &self.shared.peers.len())
+            .field("peers", &read(&self.shared.peers).iter().flatten().count())
             .finish_non_exhaustive()
     }
 }
@@ -323,36 +462,38 @@ impl Handle {
     /// queued or retried: if the peer is down the datagram is refused.
     pub fn send(&self, peer: PeerId, subsystem: Subsystem, body: &[u8]) -> Result<(), SendError> {
         self.shared
-            .seal_and_send(peer.index(), Payload::Data(subsystem, body))
+            .seal_and_send(peer, Payload::Data(subsystem, body))
     }
 
     /// Whether `peer` currently has an established session.
     pub fn is_up(&self, peer: PeerId) -> bool {
         self.shared
-            .peers
-            .get(peer.index())
+            .peer(peer)
             .is_some_and(|p| p.up.load(Ordering::Relaxed))
     }
 
     pub fn peer_id(&self, name: &str) -> Option<PeerId> {
-        self.shared
-            .peers
+        read(&self.shared.peers)
             .iter()
-            .position(|p| p.name == name)
+            .position(|p| p.as_ref().is_some_and(|p| **lock(&p.name) == *name))
             .map(PeerId::new)
     }
 
     /// The peer's configured name; empty for an unknown id.
-    pub fn peer_name(&self, peer: PeerId) -> &str {
+    pub fn peer_name(&self, peer: PeerId) -> Arc<str> {
         self.shared
-            .peers
-            .get(peer.index())
-            .map_or("", |p| p.name.as_str())
+            .peer(peer)
+            .map_or_else(|| Arc::from(""), |p| Arc::clone(&lock(&p.name)))
     }
 
-    /// Every configured peer, in config order.
-    pub fn peers(&self) -> impl Iterator<Item = PeerId> + '_ {
-        (0..self.shared.peers.len()).map(PeerId::new)
+    /// Every current peer, in the order they were added.
+    pub fn peers(&self) -> Vec<PeerId> {
+        read(&self.shared.peers)
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_some())
+            .map(|(i, _)| PeerId::new(i))
+            .collect()
     }
 
     /// The address the socket is bound to.
@@ -369,12 +510,14 @@ struct Shared {
     stopped: AtomicBool,
     /// Zero point for [`SharedPeer::last_sent`].
     epoch: Instant,
-    peers: Box<[SharedPeer]>,
+    /// Indexed by [`PeerId`]; `None` once removed. Only the driver thread
+    /// changes it.
+    peers: RwLock<Vec<Option<Arc<SharedPeer>>>>,
 }
 
 /// The per-peer state senders need. Everything else is the driver's alone.
 struct SharedPeer {
-    name: String,
+    name: Mutex<Arc<str>>,
     up: AtomicBool,
     route: Mutex<Route>,
     /// The configured address, once resolved.
@@ -391,9 +534,33 @@ struct Route {
     addr: Option<SocketAddr>,
 }
 
+impl SharedPeer {
+    fn new(name: &str) -> Self {
+        Self {
+            name: Mutex::new(name.into()),
+            up: AtomicBool::new(false),
+            route: Mutex::new(Route::default()),
+            configured: Mutex::new(None),
+            last_sent: AtomicU64::new(0),
+        }
+    }
+
+    fn last_sent(&self, epoch: Instant) -> Instant {
+        epoch + Duration::from_nanos(self.last_sent.load(Ordering::Relaxed))
+    }
+}
+
 impl Shared {
-    fn seal_and_send(&self, peer: usize, payload: Payload<'_>) -> Result<(), SendError> {
-        let entry = self.peers.get(peer).ok_or(SendError::NotConnected)?;
+    fn peer(&self, id: PeerId) -> Option<Arc<SharedPeer>> {
+        read(&self.peers).get(id.index())?.clone()
+    }
+
+    fn seal_and_send(&self, peer: PeerId, payload: Payload<'_>) -> Result<(), SendError> {
+        let entry = self.peer(peer).ok_or(SendError::NotConnected)?;
+        self.seal_and_send_to(&entry, payload)
+    }
+
+    fn seal_and_send_to(&self, entry: &SharedPeer, payload: Payload<'_>) -> Result<(), SendError> {
         let (session, addr) = {
             let route = lock(&entry.route);
             match (&route.session, route.addr) {
@@ -443,4 +610,8 @@ fn canonical(addr: SocketAddr) -> SocketAddr {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // Every value guarded here is consistent after each statement.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
 }

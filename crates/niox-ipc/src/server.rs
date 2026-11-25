@@ -37,6 +37,10 @@ pub trait Handler: Send + Sync + 'static {
     /// Moves keyboard/mouse focus. An error is a message for the caller,
     /// e.g. that the client isn't connected.
     fn focus(&self, target: &Target) -> Result<(), String>;
+
+    /// Re-reads the config and applies it. Returns what changed, one line
+    /// each, or why the config couldn't be used.
+    fn reload(&self) -> Result<Vec<String>, String>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -353,6 +357,10 @@ fn serve(shared: &Shared, id: u64, stream: UnixStream) {
             Ok(Request::Status) => Message::Status(shared.publisher.status()),
             Ok(Request::Focus { target }) => match shared.handler.focus(&target) {
                 Ok(()) => Message::Ok,
+                Err(message) => Message::Error { message },
+            },
+            Ok(Request::Reload) => match shared.handler.reload() {
+                Ok(changes) => Message::Reloaded { changes },
                 Err(message) => Message::Error { message },
             },
             Ok(Request::Subscribe) => {

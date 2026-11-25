@@ -9,6 +9,10 @@
 //!
 //! It also serves the local control socket (`/run/niox/niox.sock`), which
 //! reports focus and peer status and takes control requests from nioxctl.
+//!
+//! `SIGHUP` (`systemctl reload nioxd`) or `nioxctl reload` re-reads the
+//! config and applies it without a restart. An invalid config is refused
+//! and the running one kept.
 
 mod km;
 
@@ -20,11 +24,11 @@ use std::thread;
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
-use niox_config::{Config, Role};
+use niox_config::Config;
 use niox_ipc::protocol::PROTOCOL_VERSION;
-use niox_ipc::{self as ipc, PeerStatus, Publisher, Server, Status};
+use niox_ipc::{self as ipc, Publisher, Server, Status};
 use niox_km::device::Stop;
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -56,12 +60,121 @@ fn main() -> ExitCode {
 
 fn run(args: Args) -> anyhow::Result<()> {
     let loaded = niox_config::load(&args.config).context("loading config")?;
-    let config = &loaded.config;
     if loaded.created_identity {
         info!(path = %args.config.display(), "generated a new identity keypair");
     }
+    log_config(&args.config, &loaded.config);
+
+    // One shutdown signal for everything: a signal, any worker thread
+    // panicking, or a reload that can't be applied triggers it.
+    let stop = Stop::new().context("creating the stop signal")?;
+    let _stop_on_exit = stop.guard();
+    let signaled = Arc::new(AtomicBool::new(false));
+    let mut signals =
+        Signals::new([SIGINT, SIGTERM, SIGHUP]).context("installing signal handlers")?;
+
+    let publisher = Publisher::new(empty_status(&loaded.config));
+    let daemon = Arc::new(Daemon {
+        config_path: args.config.clone(),
+        km: km::Km::start(loaded.config, &stop, &publisher)?,
+    });
+    {
+        let (stop, signaled, daemon) = (stop.clone(), Arc::clone(&signaled), Arc::clone(&daemon));
+        thread::Builder::new()
+            .name("signals".into())
+            .spawn(move || {
+                for sig in signals.forever() {
+                    if sig == SIGHUP {
+                        info!("SIGHUP: reloading the config");
+                        // Errors are logged by reload.
+                        let _ = daemon.reload();
+                        continue;
+                    }
+                    info!(signal = sig, "stopping");
+                    signaled.store(true, Ordering::SeqCst);
+                    stop.trigger();
+                    return;
+                }
+            })
+            .context("spawning the signal thread")?;
+    }
+
+    // KM never depends on the control socket: if it can't be served,
+    // say so and carry on.
+    let control = Control(Arc::clone(&daemon));
+    let control = match Server::start(&args.socket, socket_group(), publisher, control) {
+        Ok(server) => {
+            info!(path = %args.socket.display(), "control socket listening");
+            Some(server)
+        }
+        Err(e) => {
+            error!(
+                "{:#}",
+                anyhow::Error::from(e).context("control socket unavailable (nioxctl won't work)")
+            );
+            None
+        }
+    };
+    info!("running");
+    stop.wait();
+    drop(control);
+    daemon.km.shutdown();
+
+    if !signaled.load(Ordering::SeqCst) {
+        bail!("a worker thread failed, or a reload couldn't be applied; exiting");
+    }
+    info!("stopped");
+    Ok(())
+}
+
+/// What signals and control requests act on.
+#[derive(Debug)]
+struct Daemon {
+    config_path: PathBuf,
+    km: km::Km,
+}
+
+impl Daemon {
+    /// Re-reads the config and applies it. An invalid config changes
+    /// nothing.
+    fn reload(&self) -> anyhow::Result<Vec<String>> {
+        let loaded = match niox_config::load(&self.config_path) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                let e =
+                    anyhow::Error::from(e).context("reload refused; keeping the running config");
+                warn!("{e:#}");
+                return Err(e);
+            }
+        };
+        let changes = self.km.reload(loaded.config)?;
+        if changes.is_empty() {
+            info!("config reloaded; nothing changed");
+        }
+        for change in &changes {
+            info!("config reloaded: {change}");
+        }
+        Ok(changes)
+    }
+}
+
+/// Serves control requests (e.g. `nioxctl focus`).
+#[derive(Debug)]
+struct Control(Arc<Daemon>);
+
+impl ipc::Handler for Control {
+    fn focus(&self, target: &ipc::Target) -> Result<(), String> {
+        self.0.km.focus(target)
+    }
+
+    fn reload(&self) -> Result<Vec<String>, String> {
+        self.0.reload().map_err(|e| format!("{e:#}"))
+    }
+}
+
+fn log_config(path: &std::path::Path, config: &Config) {
     info!(
-        path = %args.config.display(),
+        path = %path.display(),
         public_key = %config.identity.public_key,
         port = config.transport.port,
         peers = config.peers.len(),
@@ -79,84 +192,17 @@ fn run(args: Args) -> anyhow::Result<()> {
     if config.peers.is_empty() {
         warn!("no peers configured; nothing to do until some are added");
     }
-
-    // One shutdown signal for everything: a signal, or any worker thread
-    // panicking, triggers it.
-    let stop = Stop::new().context("creating the stop signal")?;
-    let _stop_on_exit = stop.guard();
-    let signaled = Arc::new(AtomicBool::new(false));
-    let mut signals = Signals::new([SIGINT, SIGTERM]).context("installing signal handlers")?;
-    {
-        let stop = stop.clone();
-        let signaled = Arc::clone(&signaled);
-        thread::Builder::new()
-            .name("signals".into())
-            .spawn(move || {
-                if let Some(sig) = signals.forever().next() {
-                    info!(signal = sig, "stopping");
-                    signaled.store(true, Ordering::SeqCst);
-                    stop.trigger();
-                }
-            })
-            .context("spawning the signal thread")?;
-    }
-
-    let publisher = Publisher::new(initial_status(config));
-    let km = km::Km::start(config, &stop, &publisher)?;
-    // KM never depends on the control socket: if it can't be served,
-    // say so and carry on.
-    let control = match Server::start(&args.socket, socket_group(), publisher, km.control()) {
-        Ok(server) => {
-            info!(path = %args.socket.display(), "control socket listening");
-            Some(server)
-        }
-        Err(e) => {
-            error!(
-                "{:#}",
-                anyhow::Error::from(e).context("control socket unavailable (nioxctl won't work)")
-            );
-            None
-        }
-    };
-    info!("running");
-    stop.wait();
-    drop(control);
-    km.shutdown();
-
-    if !signaled.load(Ordering::SeqCst) {
-        bail!("a worker thread failed; exiting");
-    }
-    info!("stopped");
-    Ok(())
 }
 
-/// The status the control socket reports before anything has happened.
-fn initial_status(config: &Config) -> Status {
-    let role = |r| match r {
-        Role::Host => ipc::Role::Host,
-        Role::Client => ipc::Role::Client,
-    };
+/// A placeholder status until KM fills in the real one.
+fn empty_status(config: &Config) -> Status {
     Status {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: PROTOCOL_VERSION,
         public_key: config.identity.public_key.to_string(),
         port: config.transport.port,
-        focus: config
-            .peers
-            .iter()
-            .any(|p| p.role == Role::Client)
-            .then_some(ipc::Target::Host),
-        peers: config
-            .peers
-            .iter()
-            .map(|p| PeerStatus {
-                name: p.name.clone(),
-                address: p.address.to_string(),
-                role: role(p.role),
-                connected: false,
-                in_focus_cycle: false,
-            })
-            .collect(),
+        focus: None,
+        peers: Vec::new(),
     }
 }
 

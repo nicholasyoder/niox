@@ -3,14 +3,17 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use niox_config::{PrivateKey, PublicKey};
 use tracing::{debug, info, trace, warn};
 
-use super::{EndpointConfig, Event, Handle, PeerId, Timers, canonical, lock};
+use super::{
+    EndpointConfig, Event, Handle, PeerError, PeerId, PeerSpec, SharedPeer, Timers, canonical, lock,
+};
 use crate::packet::{INIT_LEN, RESPONSE_LEN};
 use crate::{
     Datagram, Error, Initiation, MAX_DATAGRAM, MAX_PAYLOAD, Payload, Responded, Session, Timestamp,
@@ -25,18 +28,41 @@ const MAX_WAIT: Duration = Duration::from_secs(1);
 /// answering one anyway.
 const MAX_INITS_IGNORED: u32 = 3;
 
+/// A change to the peers, carried out on the driver thread.
+pub(super) enum Command {
+    Add {
+        id: PeerId,
+        spec: PeerSpec,
+        peer: Arc<SharedPeer>,
+        reply: SyncSender<Result<(), PeerError>>,
+    },
+    Remove {
+        id: PeerId,
+        reply: SyncSender<Result<(), PeerError>>,
+    },
+    Update {
+        id: PeerId,
+        name: Arc<str>,
+        reply: SyncSender<Result<(), PeerError>>,
+    },
+}
+
 pub(super) struct Driver<F> {
     handle: Handle,
     key: PrivateKey,
     public_key: PublicKey,
     timers: Timers,
-    peers: Vec<PeerState>,
+    /// Indexed by [`PeerId`]; `None` once removed.
+    peers: Vec<Option<PeerState>>,
+    commands: Receiver<Command>,
     handler: F,
 }
 
 struct PeerState {
-    name: String,
+    name: Arc<str>,
     public_key: PublicKey,
+    /// What senders see of this peer.
+    shared: Arc<SharedPeer>,
     /// The established session, if the peer is up.
     current: Option<Live>,
     /// A session this side created by answering an init, waiting for the
@@ -58,6 +84,25 @@ struct PeerState {
     inits_ignored: u32,
 }
 
+impl PeerState {
+    fn new(spec: &PeerSpec, shared: Arc<SharedPeer>, timers: Timers, now: Instant) -> Self {
+        Self {
+            name: spec.name.as_str().into(),
+            public_key: spec.public_key,
+            shared,
+            current: None,
+            unconfirmed: None,
+            pending: None,
+            retry_at: now,
+            retry_delay: timers.retry_initial,
+            newest_init: None,
+            answered: None,
+            seen_at: None,
+            inits_ignored: 0,
+        }
+    }
+}
+
 struct Live {
     session: Arc<Session>,
     last_received: Instant,
@@ -72,24 +117,19 @@ impl<F> Driver<F>
 where
     F: FnMut(&Handle, Event<'_>),
 {
-    pub(super) fn new(handle: Handle, config: EndpointConfig, handler: F) -> Self {
+    pub(super) fn new(
+        handle: Handle,
+        config: EndpointConfig,
+        shared: Vec<Arc<SharedPeer>>,
+        commands: Receiver<Command>,
+        handler: F,
+    ) -> Self {
         let now = Instant::now();
         let peers = config
             .peers
             .into_iter()
-            .map(|spec| PeerState {
-                name: spec.name,
-                public_key: spec.public_key,
-                current: None,
-                unconfirmed: None,
-                pending: None,
-                retry_at: now,
-                retry_delay: config.timers.retry_initial,
-                newest_init: None,
-                answered: None,
-                seen_at: None,
-                inits_ignored: 0,
-            })
+            .zip(shared)
+            .map(|(spec, shared)| Some(PeerState::new(&spec, shared, config.timers, now)))
             .collect();
         Self {
             handle,
@@ -97,8 +137,121 @@ where
             key: config.private_key,
             timers: config.timers,
             peers,
+            commands,
             handler,
         }
+    }
+
+    /// Every current peer, with its index.
+    fn live(&self) -> impl Iterator<Item = (usize, &PeerState)> {
+        self.peers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|s| (i, s)))
+    }
+
+    fn state(&self, index: usize) -> Option<&PeerState> {
+        self.peers.get(index)?.as_ref()
+    }
+
+    fn state_mut(&mut self, index: usize) -> Option<&mut PeerState> {
+        self.peers.get_mut(index)?.as_mut()
+    }
+
+    fn on_commands(&mut self) {
+        while let Ok(command) = self.commands.try_recv() {
+            match command {
+                Command::Add {
+                    id,
+                    spec,
+                    peer,
+                    reply,
+                } => {
+                    let result = if self.live().any(|(_, s)| s.public_key == spec.public_key)
+                        || spec.public_key == self.public_key
+                    {
+                        Err(PeerError::DuplicateKey)
+                    } else if self.peers.get(id.index()).is_some_and(Option::is_some) {
+                        Err(PeerError::TooMany)
+                    } else {
+                        self.add(id, &spec, peer);
+                        Ok(())
+                    };
+                    let _ = reply.send(result);
+                }
+                Command::Remove { id, reply } => {
+                    let result = if self.state(id.index()).is_some() {
+                        self.remove(id.index());
+                        Ok(())
+                    } else {
+                        Err(PeerError::NoSuchPeer)
+                    };
+                    let _ = reply.send(result);
+                }
+                Command::Update { id, name, reply } => {
+                    let now = Instant::now();
+                    let retry_initial = self.timers.retry_initial;
+                    let result = match self.state_mut(id.index()) {
+                        Some(state) => {
+                            if *state.name != *name {
+                                info!(peer = %state.name, new_name = %name, "peer renamed");
+                            }
+                            state.name = name;
+                            // A new address may be reachable where the old
+                            // one wasn't: try it now.
+                            if state.current.is_none() {
+                                state.retry_at = now;
+                                state.retry_delay = retry_initial;
+                            }
+                            Ok(())
+                        }
+                        None => Err(PeerError::NoSuchPeer),
+                    };
+                    let _ = reply.send(result);
+                }
+            }
+        }
+    }
+
+    fn add(&mut self, id: PeerId, spec: &PeerSpec, peer: Arc<SharedPeer>) {
+        let index = id.index();
+        {
+            let mut shared = self
+                .handle
+                .shared
+                .peers
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            if shared.len() <= index {
+                shared.resize(index + 1, None);
+            }
+            shared[index] = Some(Arc::clone(&peer));
+        }
+        if self.peers.len() <= index {
+            self.peers.resize_with(index + 1, || None);
+        }
+        self.peers[index] = Some(PeerState::new(spec, peer, self.timers, Instant::now()));
+        info!(peer = spec.name, address = %spec.address, "peer added");
+    }
+
+    fn remove(&mut self, index: usize) {
+        self.go_down(index, Instant::now());
+        let Some(state) = self.peers.get_mut(index).and_then(Option::take) else {
+            return;
+        };
+        if let Some(slot) = self
+            .handle
+            .shared
+            .peers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(index)
+        {
+            *slot = None;
+        }
+        state.shared.up.store(false, Ordering::Relaxed);
+        *lock(&state.shared.route) = super::Route::default();
+        info!(peer = %state.name, "peer removed");
     }
 
     pub(super) fn run(mut self) {
@@ -112,6 +265,7 @@ where
             if self.handle.shared.stopped.load(Ordering::SeqCst) {
                 return;
             }
+            self.on_commands();
             let now = Instant::now();
             self.on_timers(now);
 
@@ -146,12 +300,11 @@ where
     }
 
     fn next_deadline(&self, now: Instant) -> Instant {
-        let shared = &self.handle.shared;
+        let epoch = self.handle.shared.epoch;
         let mut deadline = now + MAX_WAIT;
-        for (peer, state) in shared.peers.iter().zip(&self.peers) {
+        for (_, state) in self.live() {
             if let Some(live) = &state.current {
-                let last_sent =
-                    shared.epoch + Duration::from_nanos(peer.last_sent.load(Ordering::Relaxed));
+                let last_sent = state.shared.last_sent(epoch);
                 deadline = deadline
                     .min(live.last_received + self.timers.dead_after)
                     .min(last_sent + self.timers.keepalive);
@@ -167,26 +320,26 @@ where
 
     fn on_timers(&mut self, now: Instant) {
         for index in 0..self.peers.len() {
-            let state = &mut self.peers[index];
+            let Some(state) = self.peers[index].as_mut() else {
+                continue;
+            };
             if state
                 .unconfirmed
                 .as_ref()
                 .is_some_and(|(_, created)| now >= *created + self.timers.dead_after)
             {
-                debug!(peer = state.name, "unconfirmed session expired");
+                debug!(peer = %state.name, "unconfirmed session expired");
                 state.unconfirmed = None;
             }
 
             if let Some(live) = &state.current {
                 if now >= live.last_received + self.timers.dead_after {
-                    info!(peer = state.name, "peer stopped responding");
+                    info!(peer = %state.name, "peer stopped responding");
                     self.go_down(index, now);
                     self.send_init(index, now);
                     continue;
                 }
-                let shared = &self.handle.shared;
-                let last_sent = shared.epoch
-                    + Duration::from_nanos(shared.peers[index].last_sent.load(Ordering::Relaxed));
+                let last_sent = state.shared.last_sent(self.handle.shared.epoch);
                 if now >= last_sent + self.timers.keepalive {
                     self.send_keepalive(index);
                 }
@@ -213,13 +366,12 @@ where
     fn on_init(&mut self, init: &[u8], src: SocketAddr, now: Instant) {
         // A retransmission of an init already answered: resend the answer.
         // (respond() would reject it as a replay.)
-        if let Some(state) = self
-            .peers
-            .iter()
-            .find(|s| s.answered.as_ref().is_some_and(|a| a.0 == init))
+        if let Some((_, state)) = self
+            .live()
+            .find(|(_, s)| s.answered.as_ref().is_some_and(|a| a.0 == init))
         {
             if let Some(answered) = &state.answered {
-                trace!(peer = state.name, %src, "resending handshake response");
+                trace!(peer = %state.name, %src, "resending handshake response");
                 let response = answered.1;
                 let _ = self.handle.shared.send_to(&response, src);
             }
@@ -227,12 +379,14 @@ where
         }
 
         // Try the peer this address belongs to first, then everyone else.
-        let mut order: Vec<usize> = (0..self.peers.len()).collect();
+        let mut order: Vec<usize> = self.live().map(|(i, _)| i).collect();
         order.sort_by_key(|&i| !self.is_peer_address(i, src));
 
         for index in order {
             let local_index = self.new_index();
-            let state = &self.peers[index];
+            let Some(state) = self.state(index) else {
+                continue;
+            };
             match respond(
                 &self.key,
                 &state.public_key,
@@ -246,7 +400,7 @@ where
                 }
                 Err(Error::Auth) => {}
                 Err(e) => {
-                    debug!(peer = state.name, %src, "dropped handshake init: {e}");
+                    debug!(peer = %state.name, %src, "dropped handshake init: {e}");
                     return;
                 }
             }
@@ -262,8 +416,13 @@ where
         src: SocketAddr,
         now: Instant,
     ) {
-        let we_initiate = self.public_key.as_bytes() < self.peers[index].public_key.as_bytes();
-        let state = &mut self.peers[index];
+        let public_key = self.public_key;
+        let dead_after = self.timers.dead_after;
+        let shared = Arc::clone(&self.handle.shared);
+        let Some(state) = self.state_mut(index) else {
+            return;
+        };
+        let we_initiate = public_key.as_bytes() < state.public_key.as_bytes();
 
         // Both sides initiating at once: the lower public key's init wins.
         // Nudge the peer with ours right away instead of waiting out the
@@ -276,15 +435,12 @@ where
             && state.inits_ignored < MAX_INITS_IGNORED
         {
             state.inits_ignored += 1;
-            debug!(peer = state.name, "simultaneous handshake; keeping ours");
-            let _ = self
-                .handle
-                .shared
-                .send_to(pending.initiation.datagram(), src);
+            debug!(peer = %state.name, "simultaneous handshake; keeping ours");
+            let _ = shared.send_to(pending.initiation.datagram(), src);
             return;
         }
 
-        debug!(peer = state.name, %src, "answering handshake");
+        debug!(peer = %state.name, %src, "answering handshake");
         state.newest_init = Some(responded.timestamp);
         let mut init_bytes = [0; INIT_LEN];
         init_bytes.copy_from_slice(init);
@@ -295,23 +451,26 @@ where
         state.pending = None;
         state.inits_ignored = 0;
         if state.current.is_none() {
-            state.retry_at = state.retry_at.max(now + self.timers.dead_after);
+            state.retry_at = state.retry_at.max(now + dead_after);
         }
-        if let Err(e) = self.handle.shared.send_to(&responded.datagram, src) {
-            debug!(peer = state.name, %src, "sending handshake response: {e}");
+        if let Err(e) = shared.send_to(&responded.datagram, src) {
+            debug!(peer = %state.name, %src, "sending handshake response: {e}");
         }
     }
 
     fn on_response(&mut self, response: &[u8], receiver_index: u32, src: SocketAddr, now: Instant) {
-        let Some(index) = self.peers.iter().position(|s| {
+        let Some(index) = self.live().find_map(|(i, s)| {
             s.pending
                 .as_ref()
                 .is_some_and(|p| p.initiation.local_index() == receiver_index)
+                .then_some(i)
         }) else {
             trace!(%src, "dropped handshake response for no pending handshake");
             return;
         };
-        let state = &mut self.peers[index];
+        let Some(state) = self.state_mut(index) else {
+            return;
+        };
         let Some(pending) = &mut state.pending else {
             return;
         };
@@ -322,7 +481,7 @@ where
                 // Confirm the session to the responder right away.
                 self.send_keepalive(index);
             }
-            Err(e) => debug!(peer = state.name, %src, "dropped handshake response: {e}"),
+            Err(e) => debug!(peer = %state.name, %src, "dropped handshake response: {e}"),
         }
     }
 
@@ -334,7 +493,7 @@ where
         now: Instant,
         plaintext: &mut [u8],
     ) {
-        let found = self.peers.iter().enumerate().find_map(|(index, s)| {
+        let found = self.live().find_map(|(index, s)| {
             if let Some(live) = &s.current
                 && live.session.local_index() == receiver_index
             {
@@ -355,24 +514,28 @@ where
         let payload = match session.open(datagram, plaintext) {
             Ok(payload) => payload,
             Err(e) => {
-                trace!(peer = self.peers[index].name, %src, "dropped data: {e}");
+                if let Some(state) = self.state(index) {
+                    trace!(peer = %state.name, %src, "dropped data: {e}");
+                }
                 return;
             }
         };
 
-        if confirms {
-            self.peers[index].unconfirmed = None;
-            self.peers[index].seen_at = Some(src);
+        if confirms && let Some(state) = self.state_mut(index) {
+            state.unconfirmed = None;
+            state.seen_at = Some(src);
             self.establish(index, session, now);
         }
-        let state = &mut self.peers[index];
+        let Some(state) = self.state_mut(index) else {
+            return;
+        };
         if let Some(live) = &mut state.current {
             live.last_received = now;
         }
         if state.seen_at != Some(src) {
-            info!(peer = state.name, %src, "peer moved to a new address");
+            info!(peer = %state.name, %src, "peer moved to a new address");
             state.seen_at = Some(src);
-            lock(&self.handle.shared.peers[index].route).addr = Some(src);
+            lock(&state.shared.route).addr = Some(src);
         }
 
         if let Payload::Data(subsystem, body) = payload {
@@ -390,15 +553,21 @@ where
     /// Makes `session` the peer's current one and reports it up (after
     /// reporting the old session down, if there was one).
     fn establish(&mut self, index: usize, session: Arc<Session>, now: Instant) {
-        if self.peers[index].current.is_some() {
-            info!(peer = self.peers[index].name, "peer re-handshook");
+        let Some(state) = self.state(index) else {
+            return;
+        };
+        if state.current.is_some() {
+            info!(peer = %state.name, "peer re-handshook");
             self.go_down(index, now);
         }
-        let state = &mut self.peers[index];
+        let retry_initial = self.timers.retry_initial;
+        let Some(state) = self.state_mut(index) else {
+            return;
+        };
         state.pending = None;
         state.inits_ignored = 0;
-        state.retry_delay = self.timers.retry_initial;
-        let shared = &self.handle.shared.peers[index];
+        state.retry_delay = retry_initial;
+        let shared = &state.shared;
         {
             let mut route = lock(&shared.route);
             route.session = Some(Arc::clone(&session));
@@ -409,33 +578,39 @@ where
             last_received: now,
         });
         shared.up.store(true, Ordering::Relaxed);
-        info!(peer = state.name, addr = ?state.seen_at, "peer up");
+        info!(peer = %state.name, addr = ?state.seen_at, "peer up");
         (self.handler)(&self.handle, Event::Up(PeerId::new(index)));
     }
 
     fn go_down(&mut self, index: usize, now: Instant) {
-        let state = &mut self.peers[index];
+        let retry_initial = self.timers.retry_initial;
+        let Some(state) = self.state_mut(index) else {
+            return;
+        };
         if state.current.take().is_none() {
             return;
         }
         state.pending = None;
-        state.retry_delay = self.timers.retry_initial;
+        state.retry_delay = retry_initial;
         state.retry_at = now;
-        let shared = &self.handle.shared.peers[index];
-        shared.up.store(false, Ordering::Relaxed);
-        lock(&shared.route).session = None;
-        info!(peer = state.name, "peer down");
+        state.shared.up.store(false, Ordering::Relaxed);
+        lock(&state.shared.route).session = None;
+        info!(peer = %state.name, "peer down");
         (self.handler)(&self.handle, Event::Down(PeerId::new(index)));
     }
 
     fn send_keepalive(&self, index: usize) {
+        let Some(state) = self.state(index) else {
+            return;
+        };
         let shared = &self.handle.shared;
-        if let Err(e) = shared.seal_and_send(index, Payload::Keepalive) {
-            debug!(peer = self.peers[index].name, "sending keepalive: {e:#}");
+        if let Err(e) = shared.seal_and_send_to(&state.shared, Payload::Keepalive) {
+            debug!(peer = %state.name, "sending keepalive: {e:#}");
             // Count the attempt anyway, or the keepalive deadline stays in
             // the past and this retries every millisecond while the
             // network is down.
-            shared.peers[index]
+            state
+                .shared
                 .last_sent
                 .store(shared.nanos_since_epoch(), Ordering::Relaxed);
         }
@@ -444,50 +619,55 @@ where
     /// Sends (or retransmits) this side's init, and schedules the next
     /// retry.
     fn send_init(&mut self, index: usize, now: Instant) {
-        let stale = self.peers[index]
+        let Some(state) = self.state(index) else {
+            return;
+        };
+        let stale = state
             .pending
             .as_ref()
             .is_none_or(|p| now >= p.created + self.timers.init_lifetime);
         if stale {
             let local_index = self.new_index();
-            let state = &mut self.peers[index];
-            match initiate(&self.key, &state.public_key, local_index, Timestamp::now()) {
+            let key = self.key.clone();
+            let Some(state) = self.state_mut(index) else {
+                return;
+            };
+            match initiate(&key, &state.public_key, local_index, Timestamp::now()) {
                 Ok(initiation) => {
                     state.pending = Some(Pending {
                         initiation,
                         created: now,
                     });
                 }
-                Err(e) => warn!(peer = state.name, "starting handshake: {e}"),
+                Err(e) => warn!(peer = %state.name, "starting handshake: {e}"),
             }
         }
 
-        let state = &mut self.peers[index];
-        let configured = *lock(&self.handle.shared.peers[index].configured);
+        let (retry_max, shared) = (self.timers.retry_max, Arc::clone(&self.handle.shared));
+        let Some(state) = self.state_mut(index) else {
+            return;
+        };
+        let configured = *lock(&state.shared.configured);
         if let Some(pending) = &state.pending {
             let mut targets = [configured, state.seen_at];
             if targets[0] == targets[1] {
                 targets[1] = None;
             }
             for addr in targets.into_iter().flatten() {
-                trace!(peer = state.name, %addr, "sending handshake init");
-                if let Err(e) = self
-                    .handle
-                    .shared
-                    .send_to(pending.initiation.datagram(), addr)
-                {
-                    debug!(peer = state.name, %addr, "sending handshake init: {e}");
+                trace!(peer = %state.name, %addr, "sending handshake init");
+                if let Err(e) = shared.send_to(pending.initiation.datagram(), addr) {
+                    debug!(peer = %state.name, %addr, "sending handshake init: {e}");
                 }
             }
         }
 
         state.retry_at = now + jitter(state.retry_delay);
-        state.retry_delay = (state.retry_delay * 2).min(self.timers.retry_max);
+        state.retry_delay = (state.retry_delay * 2).min(retry_max);
     }
 
     fn is_peer_address(&self, index: usize, addr: SocketAddr) -> bool {
-        self.peers[index].seen_at == Some(addr)
-            || *lock(&self.handle.shared.peers[index].configured) == Some(addr)
+        self.state(index)
+            .is_some_and(|s| s.seen_at == Some(addr) || *lock(&s.shared.configured) == Some(addr))
     }
 
     /// A random session index not used by any current, unconfirmed, or
@@ -495,7 +675,7 @@ where
     fn new_index(&self) -> u32 {
         loop {
             let index = random_u32();
-            let in_use = self.peers.iter().any(|s| {
+            let in_use = self.live().any(|(_, s)| {
                 s.current
                     .as_ref()
                     .is_some_and(|l| l.session.local_index() == index)

@@ -37,6 +37,16 @@ impl Handler for FakeKm {
         self.publisher.update(|s| s.focus = Some(target.clone()));
         Ok(())
     }
+
+    /// Pretends the config dropped "laptop", unless it already did.
+    fn reload(&self) -> Result<Vec<String>, String> {
+        if self.publisher.status().peer("laptop").is_none() {
+            return Err("invalid config: nothing left to remove".into());
+        }
+        self.publisher
+            .update(|s| s.peers.retain(|p| p.name != "laptop"));
+        Ok(vec!["peer \"laptop\" removed".into()])
+    }
 }
 
 fn status() -> Status {
@@ -333,4 +343,23 @@ fn stopping_closes_connections_and_removes_the_socket() {
         Client::connect(&f.path),
         Err(ClientError::Connect { .. })
     ));
+}
+
+#[test]
+fn reload_reports_changes_and_subscribers_see_the_new_status() {
+    let f = Fixture::new();
+    let (_, mut events) = f.client().subscribe().unwrap();
+    let mut c = f.client();
+    assert_eq!(c.reload().unwrap(), ["peer \"laptop\" removed"]);
+    let Some(Ok(Event::Status(status))) = events.next() else {
+        panic!("expected a full status event");
+    };
+    assert!(status.peer("laptop").is_none());
+    // A failed reload is a refusal with the reason, and the connection
+    // carries on.
+    match c.reload() {
+        Err(ClientError::Refused(m)) => assert!(m.contains("invalid config"), "{m}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(c.status().unwrap().peers.len(), 2);
 }

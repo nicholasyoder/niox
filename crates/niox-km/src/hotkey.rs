@@ -62,6 +62,12 @@ impl Switcher {
         }
     }
 
+    /// Neither hotkey key is held, so a new hotkey can take over without
+    /// inheriting a half-finished press.
+    pub fn is_idle(&self) -> bool {
+        !self.key1_down && !self.key2_down
+    }
+
     /// The key1 press to deliver when [`Decision::press_key1_first`] is set.
     pub fn key1_press(&self) -> InputEvent {
         InputEvent::key(self.key1, KEY_DOWN)
@@ -208,6 +214,21 @@ mod tests {
             let got = s.process(&InputEvent::key(code, value));
             assert_eq!(got, want, "step {i}: key {code} value {value}");
         }
+    }
+
+    #[test]
+    fn idle_only_with_neither_key_held() {
+        let mut s = combo();
+        assert!(s.is_idle());
+        s.process(&InputEvent::key(META, 1));
+        assert!(!s.is_idle());
+        s.process(&InputEvent::key(GRAVE, 1));
+        s.process(&InputEvent::key(META, 0));
+        assert!(!s.is_idle());
+        s.process(&InputEvent::key(GRAVE, 0));
+        assert!(s.is_idle());
+        s.process(&InputEvent::key(A, 1));
+        assert!(s.is_idle());
     }
 
     #[test]

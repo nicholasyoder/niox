@@ -66,7 +66,9 @@ mod packet;
 mod replay;
 mod session;
 
-pub use endpoint::{Endpoint, EndpointConfig, Event, Handle, PeerId, PeerSpec, SendError, Timers};
+pub use endpoint::{
+    Endpoint, EndpointConfig, Event, Handle, PeerError, PeerId, PeerSpec, SendError, Timers,
+};
 pub use handshake::{Initiation, Responded, Timestamp, initiate, respond};
 pub use packet::{
     DATA_HEADER_LEN, Datagram, INIT_LEN, MAX_BODY, MAX_DATAGRAM, MAX_PAYLOAD, PROTOCOL_VERSION,

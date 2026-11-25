@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use niox_config::{PeerAddress, PrivateKey, PublicKey};
 use niox_transport::{
-    Endpoint, EndpointConfig, Event, PeerId, PeerSpec, SendError, Subsystem, Timers, Timestamp,
-    initiate,
+    Endpoint, EndpointConfig, Event, PeerError, PeerId, PeerSpec, SendError, Subsystem, Timers,
+    Timestamp, initiate,
 };
 
 const TIMERS: Timers = Timers {
@@ -170,7 +170,7 @@ fn host_with_two_clients_exchanges_data() {
     let (ha, hb) = (eh.peer_id("a").unwrap(), eh.peer_id("b").unwrap());
     let h_on_a = ea.peer_id("host").unwrap();
     let h_on_b = eb.peer_id("host").unwrap();
-    assert_eq!(eh.peer_name(hb), "b");
+    assert_eq!(&*eh.peer_name(hb), "b");
 
     expect(&ra, &Ev::Up(h_on_a));
     expect(&rb, &Ev::Up(h_on_b));
@@ -514,4 +514,116 @@ fn tie_break_winner_yields_when_its_init_cannot_get_through() {
     expect(&ra, &Ev::Up(pb));
     expect(&rb, &Ev::Up(pa));
     round_trip(&ea, pb, &rb, pa, b"b initiated");
+}
+
+#[test]
+fn peers_added_at_runtime_connect_without_disturbing_others() {
+    let (host, a, b) = (Node::new(), Node::new(), Node::new());
+    let (mut eh, rh) = host.start(vec![a.spec("a")]);
+    let (ea, ra) = a.start(vec![host.spec("host")]);
+    let (eb, rb) = b.start(vec![host.spec("host")]);
+    let ha = eh.peer_id("a").unwrap();
+    expect(&ra, &Ev::Up(ea.peer_id("host").unwrap()));
+    expect(&rh, &Ev::Up(ha));
+
+    let hb = eh.add_peer(b.spec("b")).unwrap();
+    assert_ne!(hb, ha);
+    assert_eq!(eh.peer_id("b"), Some(hb));
+    let h_on_b = eb.peer_id("host").unwrap();
+    expect(&rb, &Ev::Up(h_on_b));
+    expect(&rh, &Ev::Up(hb));
+    round_trip(&eh, hb, &rb, h_on_b, b"welcome");
+
+    // A's session was never touched.
+    expect_quiet(&ra, TIMERS.dead_after * 2);
+    assert!(eh.is_up(ha));
+
+    // A key that's already configured (or this endpoint's own) is refused.
+    assert!(matches!(
+        eh.add_peer(a.spec("again")),
+        Err(PeerError::DuplicateKey)
+    ));
+    assert!(matches!(
+        eh.add_peer(host.spec("me")),
+        Err(PeerError::DuplicateKey)
+    ));
+}
+
+#[test]
+fn removing_a_peer_reports_it_down_and_forgets_it() {
+    let (host, a, b) = (Node::new(), Node::new(), Node::new());
+    let (mut eh, rh) = host.start(vec![a.spec("a"), b.spec("b")]);
+    let (_ea, ra) = a.start(vec![host.spec("host")]);
+    let (_eb, _rb) = b.start(vec![host.spec("host")]);
+    let (ha, hb) = (eh.peer_id("a").unwrap(), eh.peer_id("b").unwrap());
+    expect(&ra, &Ev::Up(PeerId::new(0)));
+    let mut up = Vec::new();
+    while up.len() < 2 {
+        match rh.recv_timeout(WAIT).unwrap() {
+            Ev::Up(p) => up.push(p),
+            Ev::Data(..) => {}
+            Ev::Down(p) => panic!("{p:?} went down"),
+        }
+    }
+
+    eh.remove_peer(hb).unwrap();
+    expect(&rh, &Ev::Down(hb));
+    assert_eq!(eh.peer_id("b"), None);
+    assert_eq!(eh.peers(), vec![ha]);
+    assert!(eh.peer_name(hb).is_empty());
+    assert!(matches!(
+        eh.send(hb, Subsystem::Km, b"x"),
+        Err(SendError::NotConnected)
+    ));
+    assert!(matches!(eh.remove_peer(hb), Err(PeerError::NoSuchPeer)));
+    // B keeps trying to handshake, and is ignored; A stays up.
+    expect_quiet(&rh, TIMERS.dead_after * 2);
+    assert!(eh.is_up(ha));
+
+    // Re-adding it gets a fresh id.
+    let again = eh.add_peer(b.spec("b")).unwrap();
+    assert_ne!(again, hb);
+    expect(&rh, &Ev::Up(again));
+}
+
+#[test]
+fn updating_a_peer_keeps_its_session_and_follows_the_new_address() {
+    let (a, b) = (Node::new(), Node::new());
+    let nowhere = UdpSocket::bind("127.0.0.1:0").unwrap();
+    // Each side has a wrong address for the other, so nothing connects
+    // until A's config is fixed.
+    let nowhere = nowhere.local_addr().unwrap();
+    let (mut ea, ra) = a.start(vec![spec("b", b.public(), nowhere)]);
+    let (eb, rb) = b.start(vec![spec("a", a.public(), nowhere)]);
+    let (pb, pa) = (ea.peer_id("b").unwrap(), eb.peer_id("a").unwrap());
+    expect_quiet(&ra, TIMERS.retry_max);
+
+    ea.update_peer(
+        pb,
+        "bee",
+        PeerAddress::parse(&b.addr().to_string(), 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(&*ea.peer_name(pb), "bee");
+    assert_eq!(ea.peer_id("bee"), Some(pb));
+    expect(&ra, &Ev::Up(pb));
+    expect(&rb, &Ev::Up(pa));
+
+    // Renaming again while up doesn't disturb the session.
+    ea.update_peer(
+        pb,
+        "b",
+        PeerAddress::parse(&b.addr().to_string(), 0).unwrap(),
+    )
+    .unwrap();
+    round_trip(&ea, pb, &rb, pa, b"same session");
+    expect_quiet(&ra, TIMERS.dead_after * 2);
+    assert!(matches!(
+        ea.update_peer(
+            PeerId::new(7),
+            "x",
+            PeerAddress::parse("127.0.0.1", 1).unwrap()
+        ),
+        Err(PeerError::NoSuchPeer)
+    ));
 }

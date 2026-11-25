@@ -144,9 +144,9 @@ user session.
   for its network protocol. Message volume is low (focus changes, config
   reloads, status) so there's no reason to reach for a binary format or
   protobuf here. Details are in `niox_ipc::protocol`:
-  - Requests carry a `cmd` (`status`, `focus`, `subscribe`), and each
-    gets exactly one reply, in order (`status`, `ok`, or `error` with a
-    message).
+  - Requests carry a `cmd` (`status`, `focus`, `subscribe`, `reload`),
+    and each gets exactly one reply, in order (`status`, `ok`,
+    `reloaded` listing what changed, or `error` with a message).
   - `subscribe` replies with a status snapshot, then sends an `event`
     line for every change: `focus` (where focus moved), `peer` (one
     peer's new status), or `status` (the full status, when something
@@ -215,7 +215,10 @@ user session.
   If both sides initiate at once, the lower public key's init wins.
   Replies follow a peer's last authenticated source address, so a peer
   whose IP changed keeps working. Subsystems get per-peer up/down events.
-  On the test VMs, round trips take about 50µs (p50), and one sending
+  Peers can be added, removed, and updated (name, address) while the
+  endpoint runs, for config reloads, leaving every other session
+  untouched. Peer ids are never reused, so a stale id can't reach a
+  different peer. On the test VMs, round trips take about 50µs (p50), and one sending
   thread manages about 1 Gbit/s.
 - **KM protocol** (`niox-km`; message layout in its `wire` module):
   - *Ordering.* Each evdev frame (the events up to a `SYN_REPORT`) is
@@ -282,6 +285,28 @@ user session.
     cleans up. Within a running process, device threads share a
     `Stop`; a guard triggers it if a thread panics, so a panic never
     leaves other threads holding grabs with nothing replaying them.
+- **Reloading** (`SIGHUP`, i.e. `systemctl reload nioxd`, or `nioxctl
+  reload`). nioxd re-reads its config; an invalid one is refused and the
+  running config kept. Otherwise the change is applied in place:
+  - Peers are matched by public key, the thing a session is with. A peer
+    whose key is unchanged keeps its session through a rename, a new
+    address, or a role change; a new key is a new peer.
+  - KM changes come first, while removed peers' sessions are still up: a
+    removed client that has focus is sent releases for everything held
+    on it and focus returns to the host, and a removed host's virtual
+    device is destroyed. New peers' events are routed (by the id they
+    are about to get) before the transport adds them, so their first
+    `Up` isn't missed. Then the transport removes, updates, and adds
+    peers.
+  - The host side starts when the first client is configured and stops
+    (releasing its grabs) when the last one is removed. A machine that
+    keeps hosting keeps its grabs and focus.
+  - A hotkey change takes effect once the old hotkey's keys are both up,
+    so a half-finished press is never judged by the new one.
+  - A new identity or port can't be applied to a running endpoint, so
+    those restart KM as a whole (a new port is bound first, so a taken
+    port refuses the reload instead). If applying a reload fails partway,
+    nioxd exits and systemd restarts it with the new config.
 - **Control messages that must arrive** (e.g. the capabilities exchange)
   are acknowledged and resent. Per-event KM traffic is not.
 - Each machine has a keypair; a client trusts a host (and vice versa) by
@@ -316,7 +341,7 @@ niox/
   crates/
     nioxd/             # bin: privileged system service — config owner, KM capture/send/receive/uinput
     niox-session/      # bin: user-session process — audio, control API, web UI
-    nioxctl/           # bin: CLI over the nioxd socket (status, pubkey, focus, watch)
+    nioxctl/           # bin: CLI over the nioxd socket (status, pubkey, focus, reload, watch)
     niox-km/           # evdev/uinput capture + virtual input, hotkey/focus logic
     niox-audio/        # capture, Roc encode/decode, mixer, focus-follow logic
     niox-transport/    # Noise handshake + AEAD-wrapped UDP, shared by subsystems
