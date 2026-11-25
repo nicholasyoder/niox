@@ -14,6 +14,9 @@ workspace = true
 [dependencies]
 # The same nix the other crates use: SO_PEERCRED and group lookup.
 nix = { version = "0.29", features = ["poll", "socket", "user"] }
+# Passing the audio channel's fd (SCM_RIGHTS) and its SOCK_SEQPACKET
+# socketpair, with owned fds and no unsafe code.
+rustix = { version = "1.1.6", features = ["net"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"

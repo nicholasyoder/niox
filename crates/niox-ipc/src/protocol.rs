@@ -8,12 +8,13 @@
 //! {"cmd":"focus","target":{"client":"desk"}}
 //! {"cmd":"subscribe"}
 //! {"cmd":"reload"}
+//! {"cmd":"audio"}
 //! ```
 //!
 //! Everything nioxd sends carries a `type`. `status` answers `status` and
 //! `subscribe` (as the starting snapshot), `reloaded` answers a successful
 //! `reload`, `ok` and `error` answer the rest, and `event` lines follow a
-//! `subscribe`:
+//! `subscribe` (`audio` events follow an `audio` request instead):
 //!
 //! ```json
 //! {"type":"status","version":"0.1.0","protocol":1,"public_key":"…","port":4777,
@@ -24,7 +25,12 @@
 //! {"type":"error","message":"no client named \"desk\""}
 //! {"type":"event","event":"focus","focus":{"client":"desk"}}
 //! {"type":"event","event":"peer","name":"desk",…,"connected":false,"in_focus_cycle":false}
+//! {"type":"event","event":"audio","granted":true}
 //! ```
+//!
+//! An `audio` event with `granted: true` carries the audio channel: one
+//! end of a socketpair, passed with the line (`SCM_RIGHTS`; see
+//! [`crate::audio`]).
 //!
 //! Fields may be added to any message in later versions; readers ignore
 //! the ones they don't know.
@@ -50,6 +56,11 @@ pub enum Request {
     /// [`Message::Reloaded`], or [`Message::Error`] if the config is
     /// invalid (the running config is kept).
     Reload,
+    /// Ask for the audio channel. Reply: [`Message::Ok`]. nioxd grants it
+    /// to one connection at a time (see ARCHITECTURE.md), and tells this
+    /// one with [`Event::Audio`] whenever it gets or loses the channel,
+    /// for as long as the connection is open.
+    Audio,
 }
 
 /// Something nioxd sends: a reply, or an event after a `subscribe`.
@@ -80,6 +91,10 @@ pub enum Event {
     /// Something else changed (e.g. the peer list, after a config
     /// reload): the full new status.
     Status(Status),
+    /// This connection got the audio channel (which comes with the line),
+    /// or lost it (nioxd closes its end too). Only sent after an `audio`
+    /// request.
+    Audio { granted: bool },
 }
 
 /// Where keyboard/mouse focus is: this machine, or one of its clients by
@@ -166,6 +181,7 @@ mod tests {
         roundtrip(&Request::Status, r#"{"cmd":"status"}"#);
         roundtrip(&Request::Subscribe, r#"{"cmd":"subscribe"}"#);
         roundtrip(&Request::Reload, r#"{"cmd":"reload"}"#);
+        roundtrip(&Request::Audio, r#"{"cmd":"audio"}"#);
         roundtrip(
             &Request::Focus {
                 target: Target::Host,
@@ -207,6 +223,10 @@ mod tests {
                 focus: Target::Client("desk".into()),
             }),
             r#"{"type":"event","event":"focus","focus":{"client":"desk"}}"#,
+        );
+        roundtrip(
+            &Message::Event(Event::Audio { granted: true }),
+            r#"{"type":"event","event":"audio","granted":true}"#,
         );
         roundtrip(
             &Message::Event(Event::Peer(peer.clone())),

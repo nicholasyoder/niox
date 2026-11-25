@@ -21,6 +21,10 @@
 //! once the old hotkey's keys are up. A new identity or port can't be
 //! applied to a running transport, so those restart KM as a whole.
 //!
+//! Audio bodies don't touch KM: the transport handler passes them
+//! straight to the [`Relay`] (see [`crate::audio`]), which also follows
+//! the transport through restarts.
+//!
 //! # Locks
 //!
 //! Locks are taken in the order [`Km`]'s state → [`Router`] →
@@ -46,11 +50,14 @@ use niox_transport::{
 };
 use tracing::{debug, error, info};
 
+use crate::audio::Relay;
+
 /// Running KM, which can be reloaded with a new config.
 #[derive(Debug)]
 pub struct Km {
     running: Mutex<Option<Running>>,
     publisher: Publisher,
+    relay: Arc<Relay>,
     /// Triggered when something fails that only a restart can fix.
     fatal: Stop,
 }
@@ -81,11 +88,17 @@ impl Km {
     /// keyboards and mice. Focus and peer changes are published to
     /// `publisher`. `fatal` is triggered if a worker thread panics, or a
     /// reload can't be applied; [`Km::shutdown`] then stops everything.
-    pub fn start(config: Config, fatal: &Stop, publisher: &Publisher) -> anyhow::Result<Self> {
-        let running = Running::start(config, None, fatal, publisher)?;
+    pub fn start(
+        config: Config,
+        fatal: &Stop,
+        publisher: &Publisher,
+        relay: &Arc<Relay>,
+    ) -> anyhow::Result<Self> {
+        let running = Running::start(config, None, fatal, publisher, relay)?;
         Ok(Self {
             running: Mutex::new(Some(running)),
             publisher: publisher.clone(),
+            relay: Arc::clone(relay),
             fatal: fatal.clone(),
         })
     }
@@ -149,12 +162,13 @@ impl Km {
         }
         changes.push("all sessions restarted".into());
         info!("restarting keyboard/mouse for the new identity or port");
-        old.shutdown();
+        old.shutdown(&self.relay);
         *guard = Some(Running::start(
             config,
             socket,
             &self.fatal,
             &self.publisher,
+            &self.relay,
         )?);
         Ok(changes)
     }
@@ -173,7 +187,7 @@ impl Km {
     /// transport and every virtual device go away.
     pub fn shutdown(&self) {
         if let Some(running) = lock(&self.running).take() {
-            running.shutdown();
+            running.shutdown(&self.relay);
         }
     }
 }
@@ -186,6 +200,7 @@ impl Running {
         socket: Option<UdpSocket>,
         fatal: &Stop,
         publisher: &Publisher,
+        relay: &Arc<Relay>,
     ) -> anyhow::Result<Self> {
         let ids: Vec<PeerId> = (0..config.peers.len()).map(PeerId::new).collect();
         let router = Arc::new(Mutex::new(Router {
@@ -209,9 +224,10 @@ impl Running {
         let endpoint = Endpoint::start(
             socket,
             EndpointConfig::from_config(&config),
-            handler(Arc::clone(&router), publisher.clone()),
+            handler(Arc::clone(&router), publisher.clone(), Arc::clone(relay)),
         )
         .context("starting the transport")?;
+        relay.set_handle(Some(endpoint.handle()));
         info!(addr = %endpoint.local_addr(), "transport listening");
 
         let mut running = Self {
@@ -439,7 +455,8 @@ impl Running {
         }
     }
 
-    fn shutdown(self) {
+    fn shutdown(self, relay: &Relay) {
+        relay.set_handle(None);
         if let Some(host) = self.host {
             host.shutdown();
         }
@@ -450,20 +467,25 @@ impl Running {
     }
 }
 
-/// The transport handler: routes each event by the peer's role, and
-/// publishes connection and readiness changes.
+/// The transport handler: passes audio to the relay, routes KM events
+/// by the peer's role, and publishes connection and readiness changes.
 fn handler(
     router: Arc<Mutex<Router>>,
     publisher: Publisher,
+    relay: Arc<Relay>,
 ) -> impl FnMut(&Handle, Event<'_>) + Send + 'static {
     move |handle, event| {
         let peer = match event {
             Event::Up(peer) | Event::Down(peer) | Event::Data { peer, .. } => peer,
         };
-        if let Event::Data { subsystem, .. } = event
-            && subsystem != Subsystem::Km
-        {
-            return;
+        match event {
+            Event::Data {
+                subsystem: Subsystem::Audio,
+                body,
+                ..
+            } => return relay.deliver(handle, peer, body),
+            Event::Data { subsystem, .. } if subsystem != Subsystem::Km => return,
+            _ => {}
         }
         let mut router = lock(&router);
         let Some(&role) = router.roles.get(&peer) else {

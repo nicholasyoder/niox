@@ -147,13 +147,16 @@ user session.
   re-handshakes. niox-session asks for an audio channel on its control
   connection, and nioxd answers by passing it one end of a
   `SOCK_SEQPACKET` socketpair (`SCM_RIGHTS`); each packet on it is one
-  peer-addressed Roc packet. The channel lasts exactly as long as that
+  `Subsystem::Audio` body behind the peer's configured name
+  (`niox_ipc::audio` has the layout), naming the destination going out
+  and the source coming in. The channel lasts exactly as long as that
   control connection, so a crashed niox-session frees it with nothing
   left in `/run/niox`. nioxd forwards both ways without ever blocking:
   outbound packets are sealed and sent as `Subsystem::Audio`, and inbound
   ones are written to the channel from the transport's driver thread
   with a non-blocking send, dropped if niox-session has fallen behind
-  (Roc conceals the loss). The extra local hop costs microseconds at
+  (Roc conceals the loss). Outbound packets are read on a thread of
+  nioxd's own and sent from there. The extra local hop costs microseconds at
   about 300 packets/s, against a latency target of ~200ms.
 - **One niox-session gets the audio channel: the active seat's.** More
   than one can be connected (fast user switching, or a lingering user
@@ -162,8 +165,12 @@ user session.
   (`ACTIVE_UID=` in `/run/systemd/seats/seat0`, no D-Bus needed),
   moving it when the active user changes. Only that user's PipeWire can
   use the audio devices anyway, since logind gives device access to the
-  active session. With nobody active on a seat (a headless host with a
-  lingering user), the first to ask keeps it until it disconnects.
+  active session. When the active user has no niox-session asking
+  (nobody active, as on a headless host with a lingering user; a login
+  screen, whose user runs none; or a user outside the `niox` group), the
+  first to ask gets it and keeps it until it disconnects or the active
+  user's niox-session asks. nioxd rereads the seat every half second
+  while anyone is asking.
 
 ### Local IPC (nioxd ↔ niox-session / nioxctl)
 
@@ -177,9 +184,12 @@ user session.
   for its network protocol. Message volume is low (focus changes, config
   reloads, status) so there's no reason to reach for a binary format or
   protobuf here. Details are in `niox_ipc::protocol`:
-  - Requests carry a `cmd` (`status`, `focus`, `subscribe`, `reload`),
-    and each gets exactly one reply, in order (`status`, `ok`,
+  - Requests carry a `cmd` (`status`, `focus`, `subscribe`, `reload`,
+    `audio`), and each gets exactly one reply, in order (`status`, `ok`,
     `reloaded` listing what changed, or `error` with a message).
+  - `audio` asks for the audio channel and is answered `ok`. Then, for as
+    long as the connection is open, an `audio` event says whenever it
+    gets the channel (the fd comes with that line) or loses it.
   - `subscribe` replies with a status snapshot, then sends an `event`
     line for every change: `focus` (where focus moved), `peer` (one
     peer's new status), or `status` (the full status, when something

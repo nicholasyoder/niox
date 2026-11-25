@@ -163,6 +163,9 @@ fn print_event(out: &mut impl Write, event: &Event) -> io::Result<()> {
             writeln!(out, "status changed:")?;
             print_status(out, status)
         }
+        // Only sent to a connection that asked for audio, which watch
+        // doesn't.
+        Event::Audio { granted } => writeln!(out, "audio channel granted: {granted}"),
     }
 }
 

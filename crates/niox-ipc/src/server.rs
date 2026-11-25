@@ -12,16 +12,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::socket::{getsockopt, sockopt};
 use tracing::{debug, error, warn};
 
+use crate::arbiter::{Arbiter, Waiter};
+use crate::audio::AudioChannel;
 use crate::protocol::{Message, Request, Target};
 use crate::publisher::Publisher;
-use crate::{MAX_LINE, read_line, write_line};
+use crate::{MAX_LINE, Outgoing, fds, line, read_line, write_line};
 
 /// Most connections served at once; more are turned away.
 const MAX_CONNECTIONS: usize = 64;
@@ -30,6 +32,9 @@ const MAX_CONNECTIONS: usize = 64;
 const QUEUE: usize = 256;
 /// How long a write to a client that isn't reading may block.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often the seat's active user is checked while any connection
+/// wants the audio channel.
+const SEAT_POLL: Duration = Duration::from_millis(500);
 
 /// What nioxd does for control requests. Called on the connection's own
 /// thread, never with the [`Publisher`]'s lock held.
@@ -41,6 +46,20 @@ pub trait Handler: Send + Sync + 'static {
     /// Re-reads the config and applies it. Returns what changed, one line
     /// each, or why the config couldn't be used.
     fn reload(&self) -> Result<Vec<String>, String>;
+
+    /// Hands nioxd its end of a newly granted audio channel, whose other
+    /// end is on its way to the connection that holds it now; or `None`
+    /// once no connection holds it. Either way, the end from the call
+    /// before (if any) should be closed, which ends that channel for the
+    /// connection that had it.
+    fn audio_channel(&self, channel: Option<AudioChannel>);
+
+    /// The uid of the user active on the seat, whose connection gets the
+    /// audio channel. Checked every half second while any connection
+    /// wants it.
+    fn active_uid(&self) -> Option<u32> {
+        crate::seat::active_uid()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -95,6 +114,7 @@ struct Shared {
     handler: Box<dyn Handler>,
     stopping: AtomicBool,
     conns: Mutex<Conns>,
+    audio: Mutex<Arbiter>,
 }
 
 #[derive(Default)]
@@ -126,6 +146,7 @@ impl Server {
             handler: Box::new(handler),
             stopping: AtomicBool::new(false),
             conns: Mutex::new(Conns::default()),
+            audio: Mutex::new(Arbiter::default()),
         });
         let accept = {
             let shared = Arc::clone(&shared);
@@ -179,6 +200,19 @@ impl Drop for Server {
 impl Shared {
     fn lock_conns(&self) -> MutexGuard<'_, Conns> {
         self.conns.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Changes who waits for the audio channel (if `change` is given),
+    /// then gives it to whoever should have it now.
+    fn arbitrate_audio(&self, change: impl FnOnce(&mut Arbiter)) {
+        let mut audio = self.audio.lock().unwrap_or_else(PoisonError::into_inner);
+        change(&mut audio);
+        if audio.is_empty() {
+            // Nobody to ask about, so skip reading the seat.
+            audio.arbitrate(None, &*self.handler);
+        } else {
+            audio.arbitrate(self.handler.active_uid(), &*self.handler);
+        }
     }
 }
 
@@ -236,20 +270,38 @@ fn bind(path: &Path, group: Option<u32>) -> Result<UnixListener, ServerError> {
 }
 
 fn accept_loop(shared: &Arc<Shared>, listener: &UnixListener, wake: &PipeReader) {
+    let mut last_seat_check = Instant::now();
     loop {
         let mut fds = [
             PollFd::new(listener.as_fd(), PollFlags::POLLIN),
             PollFd::new(wake.as_fd(), PollFlags::POLLIN),
         ];
-        match poll(&mut fds, PollTimeout::NONE) {
-            Ok(_) | Err(Errno::EINTR) => {}
+        let timeout = PollTimeout::try_from(SEAT_POLL).unwrap_or(PollTimeout::MAX);
+        let ready = match poll(&mut fds, timeout) {
+            Ok(n) => n > 0,
+            Err(Errno::EINTR) => false,
             Err(e) => {
                 error!("control socket: waiting for connections: {e}");
                 return;
             }
-        }
+        };
         if shared.stopping.load(Ordering::SeqCst) {
             return;
+        }
+        if last_seat_check.elapsed() >= SEAT_POLL {
+            // The seat's active user may have changed.
+            last_seat_check = Instant::now();
+            let waiting = !shared
+                .audio
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty();
+            if waiting {
+                shared.arbitrate_audio(|_| {});
+            }
+        }
+        if !ready {
+            continue;
         }
         let stream = match listener.accept() {
             Ok((stream, _)) => stream,
@@ -281,15 +333,21 @@ fn spawn_connection(shared: &Arc<Shared>, mut stream: UnixStream) -> io::Result<
     }
     let id = conns.next_id;
     conns.next_id += 1;
-    match getsockopt(&stream, sockopt::PeerCredentials) {
-        Ok(cred) => debug!(
-            conn = id,
-            uid = cred.uid(),
-            pid = cred.pid(),
-            "control connection"
-        ),
-        Err(e) => debug!(conn = id, "control connection (no peer credentials: {e})"),
-    }
+    let uid = match getsockopt(&stream, sockopt::PeerCredentials) {
+        Ok(cred) => {
+            debug!(
+                conn = id,
+                uid = cred.uid(),
+                pid = cred.pid(),
+                "control connection"
+            );
+            Some(cred.uid())
+        }
+        Err(e) => {
+            debug!(conn = id, "control connection (no peer credentials: {e})");
+            None
+        }
+    };
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     conns.open.insert(id, stream.try_clone()?);
     let thread = {
@@ -297,7 +355,7 @@ fn spawn_connection(shared: &Arc<Shared>, mut stream: UnixStream) -> io::Result<
         thread::Builder::new()
             .name(format!("control conn {id}"))
             .spawn(move || {
-                serve(&shared, id, stream);
+                serve(&shared, id, uid, stream);
                 shared.lock_conns().open.remove(&id);
                 debug!(conn = id, "control connection closed");
             })
@@ -317,8 +375,8 @@ fn spawn_connection(shared: &Arc<Shared>, mut stream: UnixStream) -> io::Result<
 /// Serves one connection: requests are read here, and everything sent
 /// (replies and events alike) goes through one queue to a writer thread,
 /// so lines never interleave.
-fn serve(shared: &Shared, id: u64, stream: UnixStream) {
-    let (tx, rx) = sync_channel::<Message>(QUEUE);
+fn serve(shared: &Shared, id: u64, uid: Option<u32>, stream: UnixStream) {
+    let (tx, rx) = sync_channel::<Outgoing>(QUEUE);
     let writer = match stream.try_clone().and_then(|out| {
         thread::Builder::new()
             .name(format!("control write {id}"))
@@ -340,9 +398,12 @@ fn serve(shared: &Shared, id: u64, stream: UnixStream) {
             Err(e) => {
                 debug!(conn = id, "control connection: {e}");
                 if e.kind() == io::ErrorKind::InvalidData {
-                    let _ = tx.send(Message::Error {
-                        message: format!("line longer than {MAX_LINE} bytes"),
-                    });
+                    let _ = tx.send(
+                        Message::Error {
+                            message: format!("line longer than {MAX_LINE} bytes"),
+                        }
+                        .into(),
+                    );
                 }
                 break;
             }
@@ -371,12 +432,28 @@ fn serve(shared: &Shared, id: u64, stream: UnixStream) {
                 }
                 break;
             }
+            Ok(Request::Audio) => {
+                let Ok(out) = stream.try_clone() else { break };
+                // The reply goes first, then any grant.
+                if tx.send(Message::Ok.into()).is_err() {
+                    break;
+                }
+                let waiter = Waiter {
+                    id,
+                    uid,
+                    tx: tx.clone(),
+                    stream: out,
+                };
+                shared.arbitrate_audio(|a| a.add(waiter));
+                continue;
+            }
         };
-        if tx.send(reply).is_err() {
+        if tx.send(reply.into()).is_err() {
             break;
         }
     }
     shared.publisher.unsubscribe(id);
+    shared.arbitrate_audio(|a| a.remove(id));
     drop(tx);
     // The writer finishes what's queued (e.g. a final error), unless the
     // client stopped reading, in which case the shutdown below ends it.
@@ -386,9 +463,13 @@ fn serve(shared: &Shared, id: u64, stream: UnixStream) {
     }
 }
 
-fn write_loop(mut out: UnixStream, rx: &Receiver<Message>) {
-    for message in rx {
-        if write_line(&mut out, &message).is_err() {
+fn write_loop(mut out: UnixStream, rx: &Receiver<Outgoing>) {
+    for Outgoing { message, fd } in rx {
+        let written = match fd {
+            None => write_line(&mut out, &message),
+            Some(fd) => line(&message).and_then(|l| fds::write_with_fd(&out, &l, fd.as_fd())),
+        };
+        if written.is_err() {
             // Wake the reader too.
             let _ = out.shutdown(Shutdown::Both);
             return;

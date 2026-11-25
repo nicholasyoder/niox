@@ -16,12 +16,20 @@
 //! [`Server`] answers status requests from it and turns its changes into
 //! events, so serving the socket never touches the KM state or its locks.
 //! [`Client`] is the other end.
+//!
+//! One connection at a time can also hold the audio channel
+//! ([`audio`]), which nioxd passes over the socket as an fd.
 
+mod arbiter;
+pub mod audio;
 mod client;
+mod fds;
 pub mod protocol;
 mod publisher;
+pub mod seat;
 mod server;
 
+pub use audio::AudioChannel;
 pub use client::{Client, ClientError, Subscription};
 pub use protocol::{Event, Message, PeerStatus, Request, Role, Status, Target};
 pub use publisher::Publisher;
@@ -36,6 +44,19 @@ pub const GROUP: &str = "niox";
 /// Longest line either side accepts, including the newline. Anything
 /// longer closes the connection.
 pub const MAX_LINE: usize = 64 * 1024;
+
+/// A line queued for a connection, and the fd to pass with it.
+#[derive(Debug)]
+pub(crate) struct Outgoing {
+    message: Message,
+    fd: Option<std::os::fd::OwnedFd>,
+}
+
+impl From<Message> for Outgoing {
+    fn from(message: Message) -> Self {
+        Self { message, fd: None }
+    }
+}
 
 /// Reads one line into `buf` (newline included). Returns `false` at end
 /// of stream, including one that ends mid-line, and fails with
@@ -58,8 +79,12 @@ fn read_line(reader: &mut impl std::io::BufRead, buf: &mut Vec<u8>) -> std::io::
 
 /// Writes `value` as one line of JSON.
 fn write_line(out: &mut impl std::io::Write, value: &impl serde::Serialize) -> std::io::Result<()> {
+    out.write_all(&line(value)?)?;
+    out.flush()
+}
+
+fn line(value: &impl serde::Serialize) -> std::io::Result<Vec<u8>> {
     let mut buf = serde_json::to_vec(value).map_err(std::io::Error::other)?;
     buf.push(b'\n');
-    out.write_all(&buf)?;
-    out.flush()
+    Ok(buf)
 }

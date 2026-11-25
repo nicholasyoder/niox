@@ -245,7 +245,7 @@ are and just get checked off; nothing moves into this section.
   *Verification*: niox-session logs focus changes; killing and
   restarting it never affects KM.
 
-- [ ] **Audio channel through nioxd** — the path audio takes to the
+- [x] **Audio channel through nioxd** — the path audio takes to the
   network, as decided in the niox-session skeleton step:
   - An `audio` request on the control socket, answered with one end of
     a `SOCK_SEQPACKET` socketpair passed over `SCM_RIGHTS`, living as

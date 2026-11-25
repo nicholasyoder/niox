@@ -34,9 +34,14 @@ pub enum Change {
     Focus(Option<Target>),
     Added(Peer),
     Removed(String),
-    Role { name: String, role: Role },
+    Role {
+        name: String,
+        role: Role,
+    },
     Connected(String),
     Disconnected(String),
+    /// This niox-session got (`true`) or lost the audio channel.
+    Audio(bool),
 }
 
 impl View {
@@ -67,6 +72,8 @@ impl View {
                 }
             }
             Event::Status(status) => new = Self::from_status(status),
+            // About this connection, not nioxd's state.
+            Event::Audio { .. } => {}
         }
         self.replace(new)
     }
@@ -133,6 +140,8 @@ impl fmt::Display for Change {
             Change::Role { name, role } => write!(f, "peer {name} is now a {}", role.as_str()),
             Change::Connected(name) => write!(f, "peer {name} connected"),
             Change::Disconnected(name) => write!(f, "peer {name} disconnected"),
+            Change::Audio(true) => write!(f, "audio channel granted"),
+            Change::Audio(false) => write!(f, "audio channel revoked (another user is active)"),
         }
     }
 }

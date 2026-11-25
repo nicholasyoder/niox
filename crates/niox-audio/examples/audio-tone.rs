@@ -20,24 +20,43 @@
 //!
 //! Both sides pace themselves with Roc's internal clock, so neither needs a
 //! sound card.
+//!
+//! With `--via` instead of `--config`, it doesn't open a transport of its
+//! own: it asks the local nioxd for the audio channel, as niox-session
+//! does, and its packets travel through nioxd's session with the peer.
+//! nioxd has to be running on both machines, and the peer named as in
+//! nioxd's config:
+//!
+//! ```text
+//! audio-tone --via /run/niox/niox.sock receive --peer a --out tone.wav
+//! audio-tone --via /run/niox/niox.sock send --peer b
+//! ```
 
 use std::io::Write as _;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use niox_audio::roc::{Channels, Clock, DecoderConfig, EncoderConfig, Fec, Format};
 use niox_audio::{Receiver, Sender};
+use niox_ipc::audio::MAX_PACKET;
+use niox_ipc::{AudioChannel, Client};
 use niox_transport::{Endpoint, EndpointConfig, Event, Handle, PeerId, SendError, Subsystem};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
+#[command(group = clap::ArgGroup::new("link").required(true).args(["config", "via"]))]
 struct Args {
+    /// Run a transport of our own with this niox config.
     #[arg(long, value_name = "PATH")]
-    config: PathBuf,
+    config: Option<PathBuf>,
+    /// Go through nioxd's audio channel instead, via its control socket.
+    #[arg(long, value_name = "SOCKET")]
+    via: Option<PathBuf>,
     /// Frame sample rate. Packets are always 44.1 kHz on the wire; Roc
     /// resamples.
     #[arg(long, default_value_t = 48_000)]
@@ -109,9 +128,7 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let args = Args::parse();
-    let loaded = niox_config::load(&args.config).context("loading config")?;
-    let config = EndpointConfig::from_config(&loaded.config);
-    let socket = Endpoint::bind(loaded.config.transport.port).context("binding socket")?;
+    let route = (args.config.clone(), args.via.clone());
     let format = Format {
         rate: args.rate,
         channels: Channels::Stereo,
@@ -133,11 +150,11 @@ fn main() -> anyhow::Result<()> {
                     clock: Clock::Internal,
                 },
             )?);
-            let (endpoint, peer) = start(socket, config, &peer, {
+            let link = Link::start(&route, &peer, {
                 let sender = Arc::clone(&sender);
                 move |body| sender.receive(body)
             })?;
-            send(&endpoint.handle(), peer, &sender, args.rate, freq)
+            send(&link, &sender, args.rate, freq)
         }
         Command::Receive {
             peer,
@@ -154,7 +171,7 @@ fn main() -> anyhow::Result<()> {
                     target_latency: latency_ms.map(Duration::from_millis),
                 },
             )?);
-            let (endpoint, peer) = start(socket, config, &peer, {
+            let link = Link::start(&route, &peer, {
                 let receiver = Arc::clone(&receiver);
                 move |body| receiver.receive(body)
             })?;
@@ -175,8 +192,7 @@ fn main() -> anyhow::Result<()> {
                 )),
             };
             receive(
-                &endpoint.handle(),
-                peer,
+                &link,
                 &receiver,
                 args.rate,
                 output,
@@ -184,6 +200,169 @@ fn main() -> anyhow::Result<()> {
             )
         }
     }
+}
+
+/// Where audio bodies go to and come from: a transport of our own, or
+/// nioxd's audio channel.
+enum Link {
+    Transport {
+        // Kept for its driver thread.
+        _endpoint: Endpoint,
+        handle: Handle,
+        peer: PeerId,
+    },
+    Via {
+        peer: String,
+        /// The channel, while nioxd grants it.
+        channel: Arc<Mutex<Option<Arc<AudioChannel>>>>,
+    },
+}
+
+type Deliver = Arc<dyn Fn(&[u8]) -> Result<(), niox_audio::Error> + Send + Sync>;
+
+impl Link {
+    /// Starts the link to `peer`, handing its audio bodies to `deliver`.
+    /// `route` is `--config` and `--via`.
+    fn start(
+        route: &(Option<PathBuf>, Option<PathBuf>),
+        peer: &str,
+        deliver: impl Fn(&[u8]) -> Result<(), niox_audio::Error> + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
+        let (config, via_socket) = route;
+        if let Some(socket) = via_socket {
+            return via(socket, peer, Arc::new(deliver));
+        }
+        let Some(path) = config else {
+            bail!("--config or --via is required");
+        };
+        let loaded = niox_config::load(path).context("loading config")?;
+        let config = EndpointConfig::from_config(&loaded.config);
+        let socket = Endpoint::bind(loaded.config.transport.port).context("binding socket")?;
+        let (endpoint, peer) = start(socket, config, peer, deliver)?;
+        Ok(Self::Transport {
+            handle: endpoint.handle(),
+            _endpoint: endpoint,
+            peer,
+        })
+    }
+
+    fn peer_name(&self) -> String {
+        match self {
+            Self::Transport { handle, peer, .. } => handle.peer_name(*peer).to_string(),
+            Self::Via { peer, .. } => peer.clone(),
+        }
+    }
+
+    /// Whether bodies can go out: the peer is up, or we hold the channel.
+    fn is_up(&self) -> bool {
+        match self {
+            Self::Transport { handle, peer, .. } => handle.is_up(*peer),
+            Self::Via { channel, .. } => lock(channel).is_some(),
+        }
+    }
+
+    /// Sends bodies, ignoring a peer that's down or a channel not granted
+    /// (the stream just continues once it's back) and logging other
+    /// failures now and then.
+    fn sender(&self) -> impl FnMut(&[u8]) + '_ {
+        let mut failures = 0u64;
+        move |body| {
+            let result = match self {
+                Self::Transport { handle, peer, .. } => {
+                    match handle.send(*peer, Subsystem::Audio, body) {
+                        Ok(()) | Err(SendError::NotConnected) => Ok(()),
+                        Err(err) => Err(anyhow::Error::from(err)),
+                    }
+                }
+                Self::Via { peer, channel } => {
+                    let current = lock(channel).clone();
+                    match current {
+                        Some(channel) => channel.send(peer, body).map_err(anyhow::Error::from),
+                        None => Ok(()),
+                    }
+                }
+            };
+            if let Err(err) = result {
+                failures += 1;
+                if failures.is_power_of_two() {
+                    warn!(count = failures, "sending audio: {err:#}");
+                }
+            }
+        }
+    }
+}
+
+/// Asks nioxd for the audio channel and follows its grants: while held,
+/// bodies from `peer` on it go to `deliver`.
+fn via(socket: &Path, peer: &str, deliver: Deliver) -> anyhow::Result<Link> {
+    let mut client = Client::connect(socket)?;
+    client.request_audio()?;
+    let (_, mut events) = client.subscribe()?;
+    info!(socket = %socket.display(), "asked nioxd for the audio channel");
+    let channel: Arc<Mutex<Option<Arc<AudioChannel>>>> = Arc::default();
+    {
+        let (channel, peer) = (Arc::clone(&channel), peer.to_owned());
+        thread::spawn(move || {
+            loop {
+                match events.next_event() {
+                    Ok(Some(niox_ipc::Event::Audio { granted })) => {
+                        let got = events.take_audio_channel().map(Arc::new);
+                        info!(granted, "audio channel");
+                        if let Some(got) = &got {
+                            let (got, peer, deliver) =
+                                (Arc::clone(got), peer.clone(), Arc::clone(&deliver));
+                            thread::spawn(move || read_channel(&got, &peer, &*deliver));
+                        }
+                        *lock(&channel) = got;
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        error!("nioxd closed the control connection");
+                        break;
+                    }
+                    Err(err) => {
+                        error!("control connection: {err:#}");
+                        break;
+                    }
+                }
+            }
+            *lock(&channel) = None;
+        });
+    }
+    Ok(Link::Via {
+        peer: peer.to_owned(),
+        channel,
+    })
+}
+
+/// Hands `peer`'s bodies on `channel` to `deliver` until it ends.
+fn read_channel(
+    channel: &AudioChannel,
+    peer: &str,
+    deliver: &(dyn Fn(&[u8]) -> Result<(), niox_audio::Error> + Send + Sync),
+) {
+    let mut buf = [0u8; MAX_PACKET];
+    let mut bad = 0u64;
+    loop {
+        match channel.recv(&mut buf) {
+            Ok(Some(packet)) if packet.peer == peer => {
+                if let Err(err) = deliver(packet.body) {
+                    bad += 1;
+                    if bad.is_power_of_two() {
+                        warn!(%err, count = bad, "dropped audio body");
+                    }
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(err) => warn!("reading the audio channel: {err}"),
+        }
+    }
+    info!("audio channel ended");
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Starts the transport, handing `peer`'s audio bodies to `deliver` on the
@@ -220,32 +399,11 @@ fn start(
     Ok((endpoint, target))
 }
 
-/// Sends `body`, ignoring a peer that's down (the stream just continues
-/// once it's back) and logging other failures now and then.
-fn sender_to(handle: &Handle, peer: PeerId) -> impl FnMut(&[u8]) + '_ {
-    let mut failures = 0u64;
-    move |body| match handle.send(peer, Subsystem::Audio, body) {
-        Ok(()) | Err(SendError::NotConnected) => {}
-        Err(err) => {
-            failures += 1;
-            if failures.is_power_of_two() {
-                warn!(%err, count = failures, "sending audio");
-            }
-        }
-    }
-}
-
-fn send(
-    handle: &Handle,
-    peer: PeerId,
-    sender: &Sender,
-    rate: u32,
-    freq: f32,
-) -> anyhow::Result<()> {
-    info!(peer = %handle.peer_name(peer), freq, rate, "sending tone");
+fn send(link: &Link, sender: &Sender, rate: u32, freq: f32) -> anyhow::Result<()> {
+    info!(peer = %link.peer_name(), freq, rate, "sending tone");
     let frames = chunk_frames(rate);
     let mut samples = vec![0f32; frames * 2];
-    let mut send = sender_to(handle, peer);
+    let mut send = link.sender();
     let mut phase = [0f64; 2];
     let step = [freq, 2.0 * freq].map(|f| std::f64::consts::TAU * f64::from(f) / f64::from(rate));
     let mut last_report = Instant::now();
@@ -261,7 +419,7 @@ fn send(
         if last_report.elapsed() >= Duration::from_secs(5) {
             last_report = Instant::now();
             info!(
-                up = handle.is_up(peer),
+                up = link.is_up(),
                 latency_ms = sender.latency().map(|l| l.as_secs_f64() * 1e3),
                 "sending"
             );
@@ -350,17 +508,16 @@ impl Stats {
 }
 
 fn receive(
-    handle: &Handle,
-    peer: PeerId,
+    link: &Link,
     receiver: &Receiver,
     rate: u32,
     mut output: Output,
     duration: Option<Duration>,
 ) -> anyhow::Result<()> {
-    info!(peer = %handle.peer_name(peer), rate, "receiving");
+    info!(peer = %link.peer_name(), rate, "receiving");
     let frames = chunk_frames(rate);
     let mut samples = vec![0f32; frames * 2];
-    let mut send = sender_to(handle, peer);
+    let mut send = link.sender();
     let start = Instant::now();
     let mut stats = Stats::default();
     while duration.is_none_or(|d| start.elapsed() < d) {

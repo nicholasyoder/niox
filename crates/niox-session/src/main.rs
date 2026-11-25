@@ -6,6 +6,11 @@
 //! socket: it subscribes to focus and peer status and keeps a [`View`] of
 //! them, logging each change. It never reads nioxd's config file.
 //!
+//! It also asks nioxd for the audio channel, which nioxd grants to one
+//! niox-session at a time (the active seat user's), and holds it while
+//! granted. Nothing uses it yet; until something does, audio nioxd
+//! passes in is dropped unread, which costs KM nothing.
+//!
 //! nioxd never depends on it. When nioxd isn't there (stopped,
 //! restarting, or not installed yet), niox-session waits and reconnects
 //! with backoff; whatever changed while it was away is reported once the
@@ -20,7 +25,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use niox_ipc::protocol::PROTOCOL_VERSION;
-use niox_ipc::{Client, ClientError};
+use niox_ipc::{AudioChannel, Client, ClientError, Event};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
@@ -79,16 +84,19 @@ fn follow(socket: &Path) -> ! {
     }
 }
 
-/// One connection to nioxd: subscribe, then apply events until it ends,
-/// passing each change in `view` to `report`. Returns `Ok` when nioxd
-/// closes the connection.
+/// One connection to nioxd: ask for the audio channel and subscribe, then
+/// apply events until it ends, passing each change in `view` (and each
+/// grant or loss of the audio channel) to `report`. Returns `Ok` when
+/// nioxd closes the connection.
 fn session(
     socket: &Path,
     view: &mut View,
     failing: &mut Option<String>,
     report: &mut dyn FnMut(&Change),
 ) -> Result<(), ClientError> {
-    let (status, events) = Client::connect(socket)?.subscribe()?;
+    let mut client = Client::connect(socket)?;
+    client.request_audio()?;
+    let (status, mut events) = client.subscribe()?;
     info!(
         nioxd = %status.version,
         peers = status.peers.len(),
@@ -107,11 +115,22 @@ fn session(
     for change in view.replace(View::from_status(&status)) {
         report(&change);
     }
-    for event in events {
-        for change in view.apply(&event?) {
+    // Held while granted; dropping it ends the channel on this side.
+    let mut audio: Option<AudioChannel> = None;
+    while let Some(event) = events.next_event()? {
+        if let Event::Audio { granted } = event {
+            audio = events.take_audio_channel();
+            if granted && audio.is_none() {
+                warn!("nioxd granted the audio channel but it didn't arrive");
+            }
+            report(&Change::Audio(granted));
+            continue;
+        }
+        for change in view.apply(&event) {
             report(&change);
         }
     }
+    drop(audio);
     Ok(())
 }
 
@@ -166,6 +185,12 @@ mod tests {
         fn reload(&self) -> Result<Vec<String>, String> {
             Err("not in this test".into())
         }
+
+        fn audio_channel(&self, _: Option<AudioChannel>) {}
+
+        fn active_uid(&self) -> Option<u32> {
+            None
+        }
     }
 
     fn status(focus: Target, desk_connected: bool) -> Status {
@@ -208,6 +233,8 @@ mod tests {
         // The snapshot, against an empty view.
         assert_eq!(next(), Change::Focus(Some(Target::Host)));
         assert!(matches!(next(), Change::Added(p) if p.name == "desk" && !p.connected));
+        // The only one asking, so it gets the audio channel.
+        assert_eq!(next(), Change::Audio(true));
 
         publisher.update(|s| *s = status(Target::Client("desk".into()), true));
         assert_eq!(next(), Change::Focus(Some(Target::Client("desk".into()))));

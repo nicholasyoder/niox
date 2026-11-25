@@ -10,10 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use niox_ipc::audio::{MAX_PACKET, Packet};
 use niox_ipc::protocol::PROTOCOL_VERSION;
 use niox_ipc::{
-    Client, ClientError, Event, Handler, Message, PeerStatus, Publisher, Request, Role, Server,
-    ServerError, Status, Target,
+    AudioChannel, Client, ClientError, Event, Handler, Message, PeerStatus, Publisher, Request,
+    Role, Server, ServerError, Status, Target,
 };
 
 /// Records focus requests; accepts the host and connected clients.
@@ -21,6 +22,9 @@ use niox_ipc::{
 struct FakeKm {
     publisher: Publisher,
     requests: Arc<Mutex<Vec<Target>>>,
+    /// nioxd's end of the audio channel, as last handed over; and every
+    /// handover, as whether it gave a channel.
+    audio: Arc<Mutex<(Option<AudioChannel>, Vec<bool>)>>,
 }
 
 impl Handler for FakeKm {
@@ -46,6 +50,40 @@ impl Handler for FakeKm {
         self.publisher
             .update(|s| s.peers.retain(|p| p.name != "laptop"));
         Ok(vec!["peer \"laptop\" removed".into()])
+    }
+
+    fn audio_channel(&self, channel: Option<AudioChannel>) {
+        let mut audio = self.audio.lock().unwrap();
+        audio.1.push(channel.is_some());
+        audio.0 = channel;
+    }
+
+    /// Nobody: these tests' connections all have the same uid anyway.
+    fn active_uid(&self) -> Option<u32> {
+        None
+    }
+}
+
+impl FakeKm {
+    fn new(publisher: Publisher) -> Self {
+        Self {
+            publisher,
+            requests: Arc::default(),
+            audio: Arc::default(),
+        }
+    }
+
+    /// Waits until the audio channel has been handed over `n` times in
+    /// all, and returns those handovers.
+    fn handovers(&self, n: usize) -> Vec<bool> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let got = self.audio.lock().unwrap().1.clone();
+            if got.len() >= n || Instant::now() > deadline {
+                return got;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
@@ -90,10 +128,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("run/niox.sock");
         let publisher = Publisher::new(status());
-        let km = FakeKm {
-            publisher: publisher.clone(),
-            requests: Arc::default(),
-        };
+        let km = FakeKm::new(publisher.clone());
         let server = Server::start(&path, group, publisher, km.clone()).unwrap();
         Self {
             _dir: dir,
@@ -319,10 +354,7 @@ fn a_stale_socket_is_replaced_but_a_live_one_is_not() {
 
 fn start(path: &Path) -> Result<Server, ServerError> {
     let publisher = Publisher::new(status());
-    let km = FakeKm {
-        publisher: publisher.clone(),
-        requests: Arc::default(),
-    };
+    let km = FakeKm::new(publisher.clone());
     Server::start(path, None, publisher, km)
 }
 
@@ -362,4 +394,118 @@ fn reload_reports_changes_and_subscribers_see_the_new_status() {
         other => panic!("expected a refusal, got {other:?}"),
     }
     assert_eq!(c.status().unwrap().peers.len(), 2);
+}
+
+#[test]
+fn the_audio_channel_goes_to_the_first_to_ask_and_moves_on_when_it_leaves() {
+    let f = Fixture::new();
+    // Asking first and subscribing after: the grant can arrive before the
+    // subscription's snapshot, and is kept for it.
+    let mut a = f.client();
+    a.request_audio().unwrap();
+    let (_, mut a_events) = a.subscribe().unwrap();
+    assert_eq!(
+        a_events.next_event().unwrap(),
+        Some(Event::Audio { granted: true })
+    );
+    let a_channel = a_events.take_audio_channel().unwrap();
+    assert!(a_events.take_audio_channel().is_none());
+    assert_eq!(f.km.handovers(1), [true]);
+
+    // Packets cross both ways.
+    let mut buf = [0; MAX_PACKET];
+    {
+        let audio = f.km.audio.lock().unwrap();
+        let nioxd = audio.0.as_ref().unwrap();
+        nioxd.send("desk", &[1, 2]).unwrap();
+        assert_eq!(
+            a_channel.recv(&mut buf).unwrap(),
+            Some(Packet {
+                peer: "desk",
+                body: &[1, 2]
+            })
+        );
+        a_channel.send("office", &[3]).unwrap();
+        assert_eq!(
+            nioxd.recv(&mut buf).unwrap(),
+            Some(Packet {
+                peer: "office",
+                body: &[3]
+            })
+        );
+    }
+
+    // A second asker waits.
+    let mut b = f.client();
+    b.request_audio().unwrap();
+    let (_, mut b_events) = b.subscribe().unwrap();
+    // Asking twice changes nothing.
+    let mut again = f.client();
+    again.request_audio().unwrap();
+    drop(again);
+    assert_eq!(f.km.handovers(1), [true]);
+
+    // The holder going away (as on `kill -9`) frees the channel for the
+    // next in line, with a new socketpair.
+    drop(a_events);
+    assert_eq!(
+        b_events.next_event().unwrap(),
+        Some(Event::Audio { granted: true })
+    );
+    let b_channel = b_events.take_audio_channel().unwrap();
+    assert_eq!(f.km.handovers(2), [true, true]);
+    // The old channel ended along with nioxd's end of it.
+    assert_eq!(a_channel.recv(&mut buf).unwrap(), None);
+    b_channel.send("desk", &[4]).unwrap();
+    assert_eq!(
+        f.km.audio
+            .lock()
+            .unwrap()
+            .0
+            .as_ref()
+            .unwrap()
+            .recv(&mut buf)
+            .unwrap(),
+        Some(Packet {
+            peer: "desk",
+            body: &[4]
+        })
+    );
+
+    // Nobody left: nioxd is told to close its end.
+    drop(b_events);
+    assert_eq!(f.km.handovers(3), [true, true, false]);
+    assert!(f.km.audio.lock().unwrap().0.is_none());
+    assert_eq!(b_channel.recv(&mut buf).unwrap(), None);
+}
+
+#[test]
+fn an_audio_request_is_answered_ok() {
+    let f = Fixture::new();
+    let (mut s, mut r) = f.raw();
+    assert_eq!(
+        raw_request(&mut s, &mut r, r#"{"cmd":"audio"}"#),
+        Message::Ok
+    );
+    // The grant follows, as an event line.
+    let mut line = String::new();
+    r.read_line(&mut line).unwrap();
+    assert_eq!(
+        line,
+        "{\"type\":\"event\",\"event\":\"audio\",\"granted\":true}\n"
+    );
+}
+
+#[test]
+fn stopping_ends_the_audio_channel() {
+    let mut f = Fixture::new();
+    let mut a = f.client();
+    a.request_audio().unwrap();
+    let (_, mut events) = a.subscribe().unwrap();
+    events.next_event().unwrap();
+    let channel = events.take_audio_channel().unwrap();
+    drop(f.server.take());
+    assert_eq!(f.km.handovers(2), [true, false]);
+    let mut buf = [0; MAX_PACKET];
+    assert_eq!(channel.recv(&mut buf).unwrap(), None);
 }

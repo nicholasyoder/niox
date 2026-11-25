@@ -21,5 +21,6 @@ anyhow = "1.0.105"
 clap = { version = "4.6.10", features = ["derive"] }
 hound = "3.5.1"
 niox-config.workspace = true
+niox-ipc.workspace = true
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

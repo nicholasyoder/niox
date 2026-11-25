@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tracing::debug;
 
+use crate::Outgoing;
 use crate::protocol::{Event, Message, Status};
 
 /// nioxd's status as the control socket reports it. nioxd updates it as
@@ -32,7 +33,7 @@ struct Inner {
 #[derive(Debug)]
 struct Subscriber {
     id: u64,
-    tx: SyncSender<Message>,
+    tx: SyncSender<Outgoing>,
     /// Shut down if the subscriber falls behind, so its connection ends.
     stream: UnixStream,
 }
@@ -70,9 +71,12 @@ impl Publisher {
     /// Registers a subscriber: queues the current status on `tx`, and
     /// then every event, until [`Publisher::unsubscribe`]. Returns `false`
     /// if `tx` has no room for the status.
-    pub(crate) fn subscribe(&self, id: u64, tx: SyncSender<Message>, stream: UnixStream) -> bool {
+    pub(crate) fn subscribe(&self, id: u64, tx: SyncSender<Outgoing>, stream: UnixStream) -> bool {
         let mut inner = self.lock();
-        if tx.try_send(Message::Status(inner.status.clone())).is_err() {
+        if tx
+            .try_send(Message::Status(inner.status.clone()).into())
+            .is_err()
+        {
             return false;
         }
         inner.subscribers.retain(|s| s.id != id);
@@ -94,7 +98,7 @@ impl Publisher {
 impl Inner {
     fn send(&mut self, message: &Message) {
         self.subscribers
-            .retain(|s| match s.tx.try_send(message.clone()) {
+            .retain(|s| match s.tx.try_send(message.clone().into()) {
                 Ok(()) => true,
                 Err(TrySendError::Full(_)) => {
                     debug!(

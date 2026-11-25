@@ -8,12 +8,15 @@
 //! It needs no user session, so it works at the login screen.
 //!
 //! It also serves the local control socket (`/run/niox/niox.sock`), which
-//! reports focus and peer status and takes control requests from nioxctl.
+//! reports focus and peer status and takes control requests from nioxctl,
+//! and relays audio between the transport and the niox-session holding
+//! the audio channel.
 //!
 //! `SIGHUP` (`systemctl reload nioxd`) or `nioxctl reload` re-reads the
 //! config and applies it without a restart. An invalid config is refused
 //! and the running one kept.
 
+mod audio;
 mod km;
 
 use std::path::PathBuf;
@@ -74,9 +77,11 @@ fn run(args: Args) -> anyhow::Result<()> {
         Signals::new([SIGINT, SIGTERM, SIGHUP]).context("installing signal handlers")?;
 
     let publisher = Publisher::new(empty_status(&loaded.config));
+    let relay = Arc::new(audio::Relay::default());
     let daemon = Arc::new(Daemon {
         config_path: args.config.clone(),
-        km: km::Km::start(loaded.config, &stop, &publisher)?,
+        km: km::Km::start(loaded.config, &stop, &publisher, &relay)?,
+        relay,
     });
     {
         let (stop, signaled, daemon) = (stop.clone(), Arc::clone(&signaled), Arc::clone(&daemon));
@@ -118,6 +123,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     info!("running");
     stop.wait();
     drop(control);
+    daemon.relay.shutdown();
     daemon.km.shutdown();
 
     if !signaled.load(Ordering::SeqCst) {
@@ -132,6 +138,7 @@ fn run(args: Args) -> anyhow::Result<()> {
 struct Daemon {
     config_path: PathBuf,
     km: km::Km,
+    relay: Arc<audio::Relay>,
 }
 
 impl Daemon {
@@ -169,6 +176,10 @@ impl ipc::Handler for Control {
 
     fn reload(&self) -> Result<Vec<String>, String> {
         self.0.reload().map_err(|e| format!("{e:#}"))
+    }
+
+    fn audio_channel(&self, channel: Option<ipc::AudioChannel>) {
+        self.0.relay.set_channel(channel);
     }
 }
 
