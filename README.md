@@ -12,7 +12,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
 [ROADMAP.md](ROADMAP.md) for progress.
 
 **Status:** early development. Encrypted single-client keyboard/mouse
-works on Linux. The current goal is full Linux parity with NKMS
+works on Linux in the original Go prototype, which is being ported to
+Rust (see ROADMAP.md). After the port, the goal is full Linux parity with NKMS
 (multi-client, hot-plug, login-screen support, RPM/deb packaging) so NKMS
 can be retired. Audio and the web UI come after that.
 

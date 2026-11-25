@@ -155,10 +155,11 @@ user session.
   stale mouse-move should never be retransmitted). Audio uses Roc
   (FEC, clock-drift correction) for encoding/decoding, with its packets
   carried over niox's own encrypted transport rather than Roc's built-in
-  sockets (feasibility to be proven, ROADMAP milestone 11). Video, when
+  sockets (feasibility to be proven by the "Audio transport spike" step
+  in ROADMAP.md). Video, when
   it exists, will pick per-platform based on capture/encode constraints.
 - **Encryption/auth**: a Noise protocol handshake (via a vetted library,
-  `flynn/noise` — not hand-rolled crypto primitives) performed per
+  `snow` — not hand-rolled crypto primitives) performed per
   host↔client session, followed by per-packet ChaCha20-Poly1305 AEAD
   encryption. This is the same class of scheme WireGuard/Tailscale/syncthing
   use, but embedded directly in niox's own sockets rather than requiring an
@@ -191,24 +192,32 @@ user session.
 
 ## Repo structure
 
-Single Go monorepo:
+Single Rust Cargo workspace. niox was first prototyped in Go (through
+single-client KM); it is being ported to Rust, mainly for the audio and
+video ecosystems (PipeWire, GStreamer, real-time audio with no GC) — see
+the "Port to Rust" section of ROADMAP.md. Until the port's cutover step,
+the Go implementation remains in `cmd/` and `internal/` alongside the
+workspace.
 
 ```
 niox/
-  cmd/
-    nioxd/     # privileged binary: config owner, KM capture/send/receive/uinput
-    niox-session/     # user-session binary: audio, control API, web UI
-  internal/
-    km/              # evdev/uinput capture + virtual input
-    audio/           # capture, Roc encode/decode, mixer, focus-follow logic
-    video/           # not yet implemented — placeholder for future work
-    transport/       # Noise handshake + AEAD-wrapped UDP, shared by subsystems
-    ipc/             # UDS control channel (nioxd <-> niox-session/nioxctl)
-    control/         # HTTP API + web UI (embed.FS)
-    config/          # shared TOML config loading
-  web/               # web UI static assets/frontend source
-  old/               # NKMS and audio-switcher, kept for reference
+  Cargo.toml           # workspace root
+  crates/
+    nioxd/             # bin: privileged system service — config owner, KM capture/send/receive/uinput
+    niox-session/      # bin: user-session process — audio, control API, web UI
+    nioxctl/           # bin: CLI over the nioxd socket (status, reload, pubkey)
+    niox-km/           # evdev/uinput capture + virtual input, hotkey/focus logic
+    niox-audio/        # capture, Roc encode/decode, mixer, focus-follow logic
+    niox-transport/    # Noise handshake + AEAD-wrapped UDP, shared by subsystems
+    niox-ipc/          # UDS control channel (nioxd <-> niox-session/nioxctl)
+    niox-control/      # HTTP API + web UI (assets embedded in the binary)
+    niox-config/       # shared TOML config loading
+  web/                 # web UI static assets/frontend source
+  old/                 # NKMS and audio-switcher, kept for reference
 ```
+
+Crates are created when the roadmap reaches them; video gets a crate
+once it has a design.
 
 ## Config
 
@@ -240,8 +249,8 @@ niox/
   root-service/user-session split; it would be one user-level process with
   the Accessibility permission.
 - **Video/graphics.** Scope and constraints (capture API, encode,
-  acceptable latency budget) aren't defined yet. The `internal/video`
-  package and `transport` abstraction exist to leave room for it, but
+  acceptable latency budget) aren't defined yet. The transport
+  abstraction exists to leave room for it, but
   nothing further should be assumed until that design happens separately.
 - Clipboard sharing.
 - Per-client audio volume controls beyond mute.
