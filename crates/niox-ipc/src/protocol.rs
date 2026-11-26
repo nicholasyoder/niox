@@ -19,7 +19,8 @@
 //! ```json
 //! {"type":"status","version":"0.1.0","protocol":1,"public_key":"…","port":4777,
 //!  "focus":"host","peers":[{"name":"desk","address":"192.168.1.20","role":"client",
-//!  "connected":true,"in_focus_cycle":true}]}
+//!  "connected":true,"in_focus_cycle":true}],
+//!  "audio":{"enabled":true,"mode":"always-mix","latency_ms":200}}
 //! {"type":"ok"}
 //! {"type":"reloaded","changes":["hotkey changed","peer \"desk\" added"]}
 //! {"type":"error","message":"no client named \"desk\""}
@@ -122,6 +123,47 @@ pub struct Status {
     pub focus: Option<Target>,
     /// Every configured peer, in config order.
     pub peers: Vec<PeerStatus>,
+    /// The config's audio settings, which niox-session applies. An older
+    /// nioxd without them reads as the defaults.
+    #[serde(default)]
+    pub audio: AudioSettings,
+}
+
+/// The config's `[audio]` table, as niox-session needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioSettings {
+    pub enabled: bool,
+    pub mode: AudioMode,
+    /// The latency target for clients' audio played on this machine.
+    pub latency_ms: u64,
+}
+
+impl Default for AudioSettings {
+    /// The config's defaults.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: AudioMode::AlwaysMix,
+            latency_ms: 200,
+        }
+    }
+}
+
+/// Which clients a host plays: all of them, or only the focused one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioMode {
+    AlwaysMix,
+    FollowFocus,
+}
+
+impl AudioMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AudioMode::AlwaysMix => "always-mix",
+            AudioMode::FollowFocus => "follow-focus",
+        }
+    }
 }
 
 impl Status {
@@ -239,11 +281,25 @@ mod tests {
             port: 4777,
             focus: None,
             peers: vec![peer],
+            audio: AudioSettings {
+                enabled: false,
+                mode: AudioMode::FollowFocus,
+                latency_ms: 120,
+            },
         };
         roundtrip(
             &Message::Status(status),
-            r#"{"type":"status","version":"0.1.0","protocol":1,"public_key":"k","port":4777,"peers":[{"name":"desk","address":"192.168.1.20","role":"client","connected":true,"in_focus_cycle":false}]}"#,
+            r#"{"type":"status","version":"0.1.0","protocol":1,"public_key":"k","port":4777,"peers":[{"name":"desk","address":"192.168.1.20","role":"client","connected":true,"in_focus_cycle":false}],"audio":{"enabled":false,"mode":"follow-focus","latency_ms":120}}"#,
         );
+    }
+
+    #[test]
+    fn status_without_audio_reads_as_the_defaults() {
+        let status: Status = serde_json::from_str(
+            r#"{"version":"0.1.0","protocol":1,"public_key":"k","port":4777,"peers":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(status.audio, AudioSettings::default());
     }
 
     #[test]

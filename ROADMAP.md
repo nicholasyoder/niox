@@ -262,7 +262,7 @@ are and just get checked off; nothing moves into this section.
   Switching the active user moves the channel. A niox-session that stops
   reading never delays KM, and `kill -9` of it frees the channel.
 
-- [ ] **Audio: one client → host** — capture from a dedicated PipeWire
+- [x] **Audio: one client → host** — capture from a dedicated PipeWire
   null sink set as the client's default (per
   `old/audio-switcher/CROSS_PLATFORM.md`, so it works with no speakers
   attached) via `pipewire-rs`, sent to the host and played to its output
@@ -281,7 +281,9 @@ are and just get checked off; nothing moves into this section.
 
 - [ ] **Audio: multi-client mixing + focus-follow** — one receiver per
   client, a mixer with per-client gain (fixed at 1.0 or 0), and
-  follow-focus vs. always-mix driven by focus events from nioxd.
+  follow-focus vs. always-mix driven by focus events from nioxd. Each
+  client already gets its own receiver and PipeWire playback stream
+  (PipeWire does the mixing), and `mode` already reaches niox-session.
   *Verification*: two clients mix cleanly. In follow-focus mode, cycling
   focus mutes and unmutes the right streams.
 

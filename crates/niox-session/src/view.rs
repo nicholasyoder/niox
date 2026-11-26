@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use niox_ipc::{Event, Role, Status, Target};
+use niox_ipc::{AudioSettings, Event, Role, Status, Target};
 
 /// nioxd's state, as far as niox-session cares.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -16,6 +16,8 @@ pub struct View {
     pub focus: Option<Target>,
     /// Every configured peer, in config order.
     pub peers: Vec<Peer>,
+    /// The config's `[audio]` table.
+    pub audio: AudioSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +44,8 @@ pub enum Change {
     Disconnected(String),
     /// This niox-session got (`true`) or lost the audio channel.
     Audio(bool),
+    /// The audio settings changed (a reload).
+    AudioSettings(AudioSettings),
 }
 
 impl View {
@@ -57,6 +61,7 @@ impl View {
                     connected: p.connected,
                 })
                 .collect(),
+            audio: status.audio,
         }
     }
 
@@ -93,6 +98,9 @@ fn diff(old: &View, new: &View) -> Vec<Change> {
     let mut changes = Vec::new();
     if old.focus != new.focus {
         changes.push(Change::Focus(new.focus.clone()));
+    }
+    if old.audio != new.audio {
+        changes.push(Change::AudioSettings(new.audio));
     }
     for peer in &old.peers {
         if !new.peers.iter().any(|p| p.name == peer.name) {
@@ -142,6 +150,13 @@ impl fmt::Display for Change {
             Change::Disconnected(name) => write!(f, "peer {name} disconnected"),
             Change::Audio(true) => write!(f, "audio channel granted"),
             Change::Audio(false) => write!(f, "audio channel revoked (another user is active)"),
+            Change::AudioSettings(a) if a.enabled => write!(
+                f,
+                "audio settings: {}, latency {}ms",
+                a.mode.as_str(),
+                a.latency_ms
+            ),
+            Change::AudioSettings(_) => write!(f, "audio settings: disabled"),
         }
     }
 }
@@ -170,6 +185,7 @@ mod tests {
             port: 4777,
             focus,
             peers,
+            audio: Default::default(),
         }
     }
 
@@ -261,6 +277,25 @@ mod tests {
                     connected: false
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn audio_settings_changes() {
+        let mut view = View::from_status(&status(None, vec![]));
+        let mut reloaded = status(None, vec![]);
+        reloaded.audio.latency_ms = 80;
+        let changes = view.apply(&Event::Status(reloaded.clone()));
+        assert_eq!(changes, vec![Change::AudioSettings(reloaded.audio)]);
+        assert_eq!(
+            changes[0].to_string(),
+            "audio settings: always-mix, latency 80ms"
+        );
+        assert_eq!(view.audio.latency_ms, 80);
+        reloaded.audio.enabled = false;
+        assert_eq!(
+            view.apply(&Event::Status(reloaded))[0].to_string(),
+            "audio settings: disabled"
         );
     }
 

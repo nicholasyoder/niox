@@ -18,6 +18,7 @@ mod write;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use address::{AddressError, PeerAddress};
 pub use key::{KEY_LEN, KeyError, PrivateKey, PublicKey};
@@ -34,6 +35,13 @@ pub const DEFAULT_HOTKEY: Hotkey = Hotkey {
     key2: Some(41),
 };
 
+/// Default audio latency target, Roc's own default: enough to cover one
+/// FEC block (90ms at 5ms packets) with room for jitter.
+pub const DEFAULT_AUDIO_LATENCY: Duration = Duration::from_millis(200);
+
+/// The audio latency targets the config accepts, in milliseconds.
+pub const AUDIO_LATENCY_MS: std::ops::RangeInclusive<u64> = 10..=2000;
+
 /// Highest valid evdev key code (`KEY_MAX` in linux/input-event-codes.h).
 pub const EVDEV_KEY_MAX: u16 = 0x2ff;
 
@@ -43,6 +51,7 @@ pub struct Config {
     pub identity: Identity,
     pub transport: Transport,
     pub km: Km,
+    pub audio: Audio,
     /// In file order. Names, public keys, and addresses are all unique.
     pub peers: Vec<Peer>,
 }
@@ -81,6 +90,46 @@ pub struct Km {
 pub struct Hotkey {
     pub key1: u16,
     pub key2: Option<u16>,
+}
+
+/// Audio settings, applied by niox-session (which nioxd hands them to).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Audio {
+    /// Whether niox-session forwards audio at all: a client's to its host,
+    /// and on a host, its clients' to its speakers.
+    pub enabled: bool,
+    pub mode: AudioMode,
+    /// How far behind the sender a host plays a client's audio. Lower is
+    /// more responsive; higher rides out more jitter and loss.
+    pub latency: Duration,
+}
+
+impl Default for Audio {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: AudioMode::AlwaysMix,
+            latency: DEFAULT_AUDIO_LATENCY,
+        }
+    }
+}
+
+/// Which clients a host plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AudioMode {
+    /// Every client's audio, mixed.
+    AlwaysMix,
+    /// Only the focused client's.
+    FollowFocus,
+}
+
+impl AudioMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AudioMode::AlwaysMix => "always-mix",
+            AudioMode::FollowFocus => "follow-focus",
+        }
+    }
 }
 
 /// Another machine this one talks to.
@@ -246,6 +295,8 @@ fn validate(raw: raw::Config) -> Result<Config, ConfigError> {
         },
     };
 
+    let audio = validate_audio(raw.audio)?;
+
     let mut peers: Vec<Peer> = Vec::with_capacity(raw.peers.len());
     let mut by_name = HashMap::new();
     let mut by_key = HashMap::new();
@@ -325,7 +376,42 @@ fn validate(raw: raw::Config) -> Result<Config, ConfigError> {
         identity,
         transport,
         km,
+        audio,
         peers,
+    })
+}
+
+fn validate_audio(raw: raw::Audio) -> Result<Audio, ConfigError> {
+    let default = Audio::default();
+    let mode = match raw.mode.as_deref() {
+        None => default.mode,
+        Some("always-mix") => AudioMode::AlwaysMix,
+        Some("follow-focus") => AudioMode::FollowFocus,
+        Some(other) => {
+            return Err(ConfigError::invalid(
+                "audio.mode",
+                format!("unknown mode {other:?}; expected \"always-mix\" or \"follow-focus\""),
+            ));
+        }
+    };
+    let latency = match raw.latency_ms {
+        None => default.latency,
+        Some(ms) if AUDIO_LATENCY_MS.contains(&ms) => Duration::from_millis(ms),
+        Some(ms) => {
+            return Err(ConfigError::invalid(
+                "audio.latency_ms",
+                format!(
+                    "{ms} is out of range ({}..={})",
+                    AUDIO_LATENCY_MS.start(),
+                    AUDIO_LATENCY_MS.end()
+                ),
+            ));
+        }
+    };
+    Ok(Audio {
+        enabled: raw.enabled.unwrap_or(default.enabled),
+        mode,
+        latency,
     })
 }
 

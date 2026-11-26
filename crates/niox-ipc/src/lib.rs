@@ -31,7 +31,9 @@ mod server;
 
 pub use audio::AudioChannel;
 pub use client::{Client, ClientError, Subscription};
-pub use protocol::{Event, Message, PeerStatus, Request, Role, Status, Target};
+pub use protocol::{
+    AudioMode, AudioSettings, Event, Message, PeerStatus, Request, Role, Status, Target,
+};
 pub use publisher::Publisher;
 pub use server::{Handler, Server, ServerError, lookup_group};
 

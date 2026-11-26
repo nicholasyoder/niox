@@ -99,6 +99,7 @@ fn status() -> Status {
             peer("laptop", Role::Client, false),
             peer("office", Role::Host, true),
         ],
+        audio: Default::default(),
     }
 }
 

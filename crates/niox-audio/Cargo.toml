@@ -14,7 +14,10 @@ workspace = true
 [dependencies]
 niox-roc.workspace = true
 niox-transport.workspace = true
+# v0_3_49: a buffer's `requested` frame count.
+pipewire = { version = "0.10.1", features = ["v0_3_49"] }
 thiserror = "2.0.21"
+tracing = "0.1.44"
 
 [dev-dependencies]
 anyhow = "1.0.105"
@@ -22,5 +25,4 @@ clap = { version = "4.6.10", features = ["derive"] }
 hound = "3.5.1"
 niox-config.workspace = true
 niox-ipc.workspace = true
-tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

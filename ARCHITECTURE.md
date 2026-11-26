@@ -134,8 +134,9 @@ user session.
 - Learns everything from nioxd: it subscribes on the control socket and
   keeps a view of focus and each peer's name, role, and connection, which
   is the config slice it needs (nioxd's config file is root-only, and
-  niox-session never reads it). Later subsystems add their settings to
-  the status nioxd publishes (e.g. the `[audio]` table).
+  niox-session never reads it). Subsystems add their settings to the
+  status nioxd publishes: the `[audio]` table is there now, and a reload
+  that changes it reaches niox-session as a status event.
 - When nioxd isn't there (stopped, restarting, not yet started), it
   retries with backoff (250ms doubling to 5s), logging an outage once,
   and reports whatever changed while it was away when the new snapshot
@@ -359,6 +360,43 @@ user session.
   - On the test VMs, a stereo stream with default FEC measures about
     198ms end to end at Roc's default latency target, and about 317
     datagrams/s (2.4 Mbit/s).
+  - *In niox-session* (`niox_audio::Engine`, a PipeWire main loop on a
+    thread of its own, via `pipewire-rs`). It runs a plan worked out
+    from the view: while it holds the audio channel and `[audio]` is
+    enabled, it sends to every *connected* host and plays every client;
+    otherwise the plan is empty.
+    - *The niox sink.* While there's a host to send to, niox-session
+      connects a stereo 48 kHz `Audio/Sink` stream (`niox_sink`, "niox →
+      host"). Apps play into it as into any output, so it works with no
+      audio hardware at all. It's a stream of the process rather than a
+      lingering `null-audio-sink` object, so it can't outlive
+      niox-session. It becomes the default output through the `default`
+      metadata's `default.configured.audio.sink`, the key `pactl
+      set-default-sink` and desktop sound settings write. When the sink
+      goes away cleanly (host gone, audio disabled, channel revoked,
+      `SIGTERM`), the previous value is put back unless the user chose
+      another output meanwhile. After a crash the key names a sink that
+      no longer exists, so WirePlumber falls back to the best real
+      output and moves playing streams there, and picks the niox sink
+      again once niox-session restarts. A host that's down takes the
+      sink with it, so a laptop away from its host plays locally.
+    - *Pauses.* PipeWire only runs the sink while something plays into
+      it, so captured audio comes in bursts. Sending stops in the gaps,
+      and after a gap of more than 100ms each host gets a fresh encoder
+      (a new RTP stream) rather than one that jumps ahead in time.
+    - *Players.* On a host, the first audio from a client makes its
+      receiver and a playback stream ("niox: <client>") into the default
+      output, which PipeWire mixes with everything else. A player whose
+      client has sent nothing for 5s is removed, so an idle client
+      doesn't keep the host's output awake. A new latency target remakes
+      the players.
+    - Both directions move through the engine on the PipeWire thread,
+      with no realtime thread: capture encodes and hands bodies to the
+      channel with a send that never waits, and a player decodes and
+      sends the receiver's feedback the same way. A reader thread passes
+      the channel's incoming bodies to the streams. If PipeWire isn't
+      running, or restarts, the engine reconnects with backoff (1s
+      doubling to 10s) and reapplies the plan.
 - **Reloading** (`SIGHUP`, i.e. `systemctl reload nioxd`, or `nioxctl
   reload`). nioxd re-reads its config; an invalid one is refused and the
   running config kept. Otherwise the change is applied in place:
@@ -460,8 +498,10 @@ once it has a design.
 - **System libraries**: `niox-roc` links the system libroc 0.4 (found
   with pkg-config) and generates its bindings at build time, so building
   the workspace needs `roc-toolkit-devel` and `clang-devel` (Debian:
-  `libroc-dev`, `libclang-dev`). Only crates that use audio link it;
-  nioxd's KM doesn't.
+  `libroc-dev`, `libclang-dev`). `niox-audio` also links libpipewire
+  through `pipewire-rs`, which needs `pipewire-devel` (Debian:
+  `libpipewire-0.3-dev`). Only crates that use audio link either;
+  nioxd doesn't.
 
 ## Config
 
@@ -484,6 +524,11 @@ once it has a design.
   [km]
   hotkey = [125, 41]    # evdev codes: hold the first, press the second; one code = single-key
 
+  [audio]               # applied by niox-session; all optional
+  enabled = true
+  mode = "always-mix"   # or "follow-focus": a host plays only the focused client
+  latency_ms = 200      # a host's latency target for its clients' audio (10-2000)
+
   [[peer]]
   name = "desk"
   address = "192.168.1.20"    # IP or hostname, optional :port
@@ -491,7 +536,7 @@ once it has a design.
   role = "client"             # the peer's role relative to this machine: "host" or "client"
   ```
 
-  Later subsystems add their own tables (audio mode, web UI token).
+  Later subsystems add their own tables (e.g. a web UI token).
 - First run: if the file is missing, nioxd writes a commented default
   with a fresh keypair. If it exists without `[identity]` (e.g. a
   packaged template), one is appended and the rest is left as written.
@@ -538,7 +583,7 @@ once it has a design.
 - `niox-session.service` — niox-session's `systemctl --user` unit
   (`ConditionGroup=niox`, `WantedBy=default.target`). It goes into the
   packages with audio, in its own subpackage so KM-only installs don't
-  pull in libroc.
+  pull in libroc or libpipewire.
 - Platform priority: Linux only for now. macOS, Windows, and mobile are
   deferred (see below).
 

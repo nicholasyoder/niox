@@ -6,11 +6,13 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
+use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use niox_config::{
-    ConfigError, DEFAULT_HOTKEY, DEFAULT_PORT, Hotkey, LoadError, PrivateKey, Role, load, parse,
+    Audio, AudioMode, ConfigError, DEFAULT_AUDIO_LATENCY, DEFAULT_HOTKEY, DEFAULT_PORT, Hotkey,
+    LoadError, PrivateKey, Role, load, parse,
 };
 
 fn mode(path: &Path) -> u32 {
@@ -77,6 +79,8 @@ fn first_run_writes_default_config_with_identity() {
     assert!(!dir.path().join("etc/niox/.niox.toml.tmp").exists());
     assert_eq!(first.config.transport.port, DEFAULT_PORT);
     assert_eq!(first.config.km.hotkey, DEFAULT_HOTKEY);
+    // The written defaults match the built-in ones.
+    assert_eq!(first.config.audio, Audio::default());
     assert!(first.config.peers.is_empty());
 
     // Steady state: same identity, nothing rewritten.
@@ -210,6 +214,7 @@ fn full_config_parses() {
     assert_eq!(laptop.address.to_string(), "laptop.lan:6000");
     assert_eq!(laptop.role, Role::Host);
     assert!(config.peer("nope").is_none());
+    assert_eq!(config.audio, Audio::default());
 }
 
 #[test]
@@ -362,7 +367,7 @@ fn rejects_peer_with_missing_field() {
 #[test]
 fn rejects_unknown_fields() {
     assert_syntax(&config_text("[km]\nhotkeys = [1]\n"), "hotkeys");
-    assert_syntax(&config_text("[audio]\n"), "audio");
+    assert_syntax(&config_text("[video]\n"), "video");
     assert_syntax(
         &config_text(&peer("d", "10.0.0.2", &pubkey(), "client").replace("role", "rol")),
         "rol",
@@ -397,6 +402,42 @@ fn validates_hotkey() {
     }
     assert_syntax(&config_text("[km]\nhotkey = [70000]\n"), "hotkey");
     assert_syntax(&config_text("[km]\nhotkey = 125\n"), "hotkey");
+}
+
+#[test]
+fn validates_audio() {
+    let audio = |table: &str| parse(&config_text(&format!("[audio]\n{table}\n"))).map(|c| c.audio);
+    assert_eq!(
+        audio("enabled = false\nmode = \"follow-focus\"\nlatency_ms = 120").unwrap(),
+        Audio {
+            enabled: false,
+            mode: AudioMode::FollowFocus,
+            latency: Duration::from_millis(120),
+        }
+    );
+    assert_eq!(
+        audio("mode = \"always-mix\"").unwrap().mode,
+        AudioMode::AlwaysMix
+    );
+    assert_eq!(audio("").unwrap(), Audio::default());
+    assert_eq!(Audio::default().latency, DEFAULT_AUDIO_LATENCY);
+    assert_invalid(
+        &config_text("[audio]\nmode = \"mix\"\n"),
+        "audio.mode",
+        "unknown mode \"mix\"",
+    );
+    for ms in [0, 9, 2001] {
+        assert_invalid(
+            &config_text(&format!("[audio]\nlatency_ms = {ms}\n")),
+            "audio.latency_ms",
+            "out of range",
+        );
+    }
+    for ms in [10, 2000] {
+        assert!(audio(&format!("latency_ms = {ms}")).is_ok());
+    }
+    assert_syntax(&config_text("[audio]\nenabled = 1\n"), "enabled");
+    assert_syntax(&config_text("[audio]\nlatency = 1\n"), "latency");
 }
 
 #[test]

@@ -11,6 +11,11 @@
 //! bodies arriving as `Subsystem::Audio` data go to
 //! [`Sender::receive`] or [`Receiver::receive`] by [`Channel::to_sender`].
 //!
+//! [`Engine`] runs the streams in the user's PipeWire: the niox sink that
+//! captures a client's audio for its hosts, and a player per client on a
+//! host. It's driven by a [`Plan`] and moves bodies through a caller's
+//! closure the same way.
+//!
 //! # Wire format
 //!
 //! Each `Subsystem::Audio` body is one Roc packet behind a one-byte
@@ -30,10 +35,15 @@
 //! own: Roc's RTP sequence numbers, jitter buffer, and FEC handle loss and
 //! reordering.
 
+mod engine;
+mod streams;
+
 use niox_roc::{Context, Decoder, DecoderConfig, Encoder, EncoderConfig, Interface};
 use niox_transport::MAX_BODY;
 
+pub use engine::{Engine, EngineError, SINK_NAME};
 pub use niox_roc as roc;
+pub use streams::{FORMAT, Out, Plan};
 
 /// The largest Roc packet: a transport body less the channel byte.
 pub const MAX_PACKET: usize = MAX_BODY - 1;

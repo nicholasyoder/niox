@@ -160,6 +160,7 @@ impl Km {
                 old.config.transport.port, config.transport.port
             ));
         }
+        changes.extend(audio_change(&old.config, &config));
         changes.push("all sessions restarted".into());
         info!("restarting keyboard/mouse for the new identity or port");
         old.shutdown(&self.relay);
@@ -259,6 +260,8 @@ impl Running {
                 host.set_hotkey(config.km.hotkey);
             }
         }
+
+        changes.extend(audio_change(&self.config, &config));
 
         // Match peers by public key: the key is what a session is with.
         let old: Vec<(PeerId, Peer)> = self
@@ -452,6 +455,7 @@ impl Running {
                     in_focus_cycle: p.role == Role::Client && host.is_some_and(|h| h.is_ready(id)),
                 })
                 .collect(),
+            audio: crate::audio_settings(&self.config.audio),
         }
     }
 
@@ -465,6 +469,20 @@ impl Running {
         // held.
         drop(self.endpoint);
     }
+}
+
+/// The line describing a change to the audio settings, if any. nioxd
+/// only publishes them; niox-session applies them.
+fn audio_change(old: &Config, new: &Config) -> Option<String> {
+    let a = &new.audio;
+    (old.audio != *a).then(|| {
+        format!(
+            "audio settings changed (enabled {}, mode {}, latency {}ms)",
+            a.enabled,
+            a.mode.as_str(),
+            a.latency.as_millis()
+        )
+    })
 }
 
 /// The transport handler: passes audio to the relay, routes KM events

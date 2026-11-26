@@ -37,6 +37,18 @@ port = 4777
 # + Grave (41), as in NKMS.
 hotkey = [125, 41]
 
+[audio]
+# Audio is forwarded by niox-session, in each user's session: a client
+# plays its audio into a niox sink that's sent to its host, and a host
+# plays its clients' audio. Without niox-session nothing changes.
+enabled = true
+# "always-mix" plays every client on the host; "follow-focus" only the
+# one with keyboard/mouse focus.
+mode = "always-mix"
+# How far behind a client the host plays its audio, in milliseconds
+# (10-2000). Below about 100, error correction can't help.
+latency_ms = 200
+
 # One [[peer]] table per machine this one talks to. `role` is the peer's
 # role relative to this machine: "client" if this machine drives its
 # keyboard and mouse, "host" if it drives this machine's.

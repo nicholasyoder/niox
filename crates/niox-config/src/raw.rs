@@ -13,6 +13,8 @@ pub(crate) struct Config {
     pub transport: Transport,
     #[serde(default)]
     pub km: Km,
+    #[serde(default)]
+    pub audio: Audio,
     #[serde(default, rename = "peer")]
     pub peers: Vec<Peer>,
 }
@@ -33,6 +35,14 @@ pub(crate) struct Transport {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Km {
     pub hotkey: Option<Vec<u16>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Audio {
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,
+    pub latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

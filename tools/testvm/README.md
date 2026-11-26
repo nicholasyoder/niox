@@ -10,6 +10,17 @@ niox testing. Built unattended from the Fedora 45 netinst ISO via kickstart.
 | `niox-client-b` | 192.168.122.203 | Fedora KDE Plasma   | client, Plasma Login (plasmalogin) / KWin |
 | `niox-debian`   | 192.168.122.204 | Debian 13, GDM + GNOME Shell | `.deb` install tests             |
 
+`niox-host` also has an emulated sound card (`ich9`) whose output QEMU
+writes to `/var/lib/libvirt/qemu/niox-host-audio.wav` on the workstation
+(readable without root; 44.1 kHz s16 stereo, appended while the VM runs),
+so audio tests can check what the host actually played. The clients have
+no sound hardware (their PipeWire shows only "Dummy Output"), like a
+client with no speakers. The `clean` snapshot predates the sound card,
+so reverting it removes the card; re-add it with `virsh edit niox-host`:
+
+    <sound model='ich9'><audio id='1'/></sound>
+    <audio id='1' type='file' path='/var/lib/libvirt/qemu/niox-host-audio.wav'/>
+
 All: 2 vCPU, 4 GiB RAM, 30 GB qcow2, default NAT network (fixed DHCP
 reservations), qemu-guest-agent. The Fedora VMs have UDP 4777 open in
 firewalld (the RPM's `niox` firewalld service is the packaged way); the

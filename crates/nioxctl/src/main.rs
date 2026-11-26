@@ -125,6 +125,17 @@ fn print_status(out: &mut impl Write, status: &Status) -> io::Result<()> {
         Some(focus) => writeln!(out, "focus: {}", focus_name(focus))?,
         None => writeln!(out, "focus: - (this machine hosts no clients)")?,
     }
+    let audio = &status.audio;
+    if audio.enabled {
+        writeln!(
+            out,
+            "audio: {}, latency {}ms (applied by niox-session)",
+            audio.mode.as_str(),
+            audio.latency_ms
+        )?;
+    } else {
+        writeln!(out, "audio: disabled")?;
+    }
     if status.peers.is_empty() {
         return writeln!(out, "peers: none configured");
     }

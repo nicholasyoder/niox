@@ -214,6 +214,19 @@ fn empty_status(config: &Config) -> Status {
         port: config.transport.port,
         focus: None,
         peers: Vec::new(),
+        audio: audio_settings(&config.audio),
+    }
+}
+
+/// The config's audio settings, as published for niox-session.
+fn audio_settings(audio: &niox_config::Audio) -> niox_ipc::AudioSettings {
+    niox_ipc::AudioSettings {
+        enabled: audio.enabled,
+        mode: match audio.mode {
+            niox_config::AudioMode::AlwaysMix => niox_ipc::AudioMode::AlwaysMix,
+            niox_config::AudioMode::FollowFocus => niox_ipc::AudioMode::FollowFocus,
+        },
+        latency_ms: u64::try_from(audio.latency.as_millis()).unwrap_or(u64::MAX),
     }
 }
 

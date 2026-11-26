@@ -11,6 +11,7 @@ license = "MPL-2.0"
 repository = "https://github.com/nicholasyoder/niox"
 
 [workspace.dependencies]
+niox-audio = { path = "crates/niox-audio" }
 niox-config = { path = "crates/niox-config" }
 niox-ipc = { path = "crates/niox-ipc" }
 niox-km = { path = "crates/niox-km" }

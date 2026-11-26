@@ -121,6 +121,7 @@ fn diff(old: &Status, new: &Status) -> Vec<Event> {
         && old.public_key == new.public_key
         && old.port == new.port
         && old.focus.is_some() == new.focus.is_some()
+        && old.audio == new.audio
         && old.peers.len() == new.peers.len()
         && old
             .peers
@@ -168,6 +169,7 @@ mod tests {
                     in_focus_cycle: false,
                 })
                 .collect(),
+            audio: Default::default(),
         }
     }
 
@@ -201,6 +203,10 @@ mod tests {
         new.peers.pop();
         new.focus = None;
         assert_eq!(diff(&old, &new), vec![Event::Status(new.clone())]);
+
+        let mut audio = old.clone();
+        audio.audio.enabled = false;
+        assert_eq!(diff(&old, &audio), vec![Event::Status(audio.clone())]);
 
         let mut renamed = old.clone();
         renamed.peers[0].name = "c".into();
