@@ -291,7 +291,7 @@ Known bugs that aren't part of a step above. Fixes to shipped behavior
 or its tests land on master and are merged into develop. Pick these up
 between steps.
 
-- [ ] **Flaky transport endpoint tests: port reuse race** — in
+- [x] **Flaky transport endpoint tests: port reuse race** — in
   `crates/niox-transport/tests/endpoint.rs`, `Node::new` binds port 0 to
   pick a free port, records it, and drops the socket. `Node::start` binds
   that port again later. In between, another test running in parallel
