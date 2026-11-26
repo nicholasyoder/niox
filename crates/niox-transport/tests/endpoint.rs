@@ -38,18 +38,27 @@ enum Ev {
     Data(PeerId, Subsystem, Vec<u8>),
 }
 
+/// A peer's identity and its socket. The socket stays bound for the
+/// node's whole life, across endpoint restarts, so no parallel test can
+/// take its port in between.
 struct Node {
     key: PrivateKey,
+    socket: UdpSocket,
     port: u16,
 }
 
 impl Node {
     fn new() -> Self {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        Self::on(UdpSocket::bind("127.0.0.1:0").unwrap())
+    }
+
+    /// A node using `socket`, which may be bound to any loopback-reachable
+    /// address.
+    fn on(socket: UdpSocket) -> Self {
         let port = socket.local_addr().unwrap().port();
-        drop(socket);
         Self {
             key: PrivateKey::generate().unwrap(),
+            socket,
             port,
         }
     }
@@ -66,10 +75,21 @@ impl Node {
         spec(name, self.public(), self.addr())
     }
 
-    /// Starts an endpoint on this node's port.
+    /// Another handle on this node's socket, with anything queued while
+    /// no endpoint was running discarded, as a freshly bound socket would
+    /// have nothing queued.
+    fn socket(&self) -> UdpSocket {
+        self.socket.set_nonblocking(true).unwrap();
+        let mut buf = [0; 2048];
+        while self.socket.recv(&mut buf).is_ok() {}
+        self.socket.set_nonblocking(false).unwrap();
+        self.socket.try_clone().unwrap()
+    }
+
+    /// Starts an endpoint on this node's socket. Only one may run at a
+    /// time.
     fn start(&self, peers: Vec<PeerSpec>) -> (Endpoint, Receiver<Ev>) {
-        let socket = UdpSocket::bind(self.addr()).unwrap();
-        start(socket, &self.key, peers)
+        start(self.socket(), &self.key, peers)
     }
 }
 
@@ -159,11 +179,11 @@ fn round_trip(from: &Endpoint, peer: PeerId, to_rx: &Receiver<Ev>, from_id: Peer
 
 #[test]
 fn host_with_two_clients_exchanges_data() {
-    let (host, a, b) = (Node::new(), Node::new(), Node::new());
     // The host binds dual-stack on every interface; clients reach it over
     // IPv4 as mapped addresses.
-    let socket = Endpoint::bind(host.port).unwrap();
-    let (eh, rh) = start(socket, &host.key, vec![a.spec("a"), b.spec("b")]);
+    let host = Node::on(Endpoint::bind(0).unwrap());
+    let (a, b) = (Node::new(), Node::new());
+    let (eh, rh) = host.start(vec![a.spec("a"), b.spec("b")]);
     let (ea, ra) = a.start(vec![host.spec("host")]);
     let (eb, rb) = b.start(vec![host.spec("host")]);
 
@@ -442,7 +462,7 @@ fn strangers_get_no_reply() {
 
     // A peer A doesn't know, which knows A's key; garbage; and data for
     // session indices that don't exist.
-    let probe = UdpSocket::bind(stranger.addr()).unwrap();
+    let probe = stranger.socket();
     probe
         .set_read_timeout(Some(Duration::from_millis(300)))
         .unwrap();
