@@ -5,6 +5,29 @@ Notable changes to niox, newest first. Versions follow
 bump may break the wire protocol or config. The RPM spec's `%changelog`
 and `debian/changelog` carry a one-line summary of each release.
 
+## 0.2.0 — unreleased
+
+Audio: clients' system audio plays on the host.
+
+- **niox-session**, a new per-user service (`systemctl --user`) in its
+  own package, `niox-session`, so keyboard/mouse-only installs don't
+  need libroc or libpipewire. It's enabled for every user on install and
+  starts for members of the `niox` group.
+- **Audio from clients to the host**: on a client, a "niox → host"
+  output becomes the default while the host is connected, so it works
+  with no speakers attached. Its audio is encoded with Roc (with
+  forward error correction) and carried over nioxd's encrypted session
+  with the host, which plays it to its default output. If niox-session
+  stops or crashes, the client's audio goes back to its own output.
+- **Mixing**: a host plays every client at once (`always-mix`), or only
+  the one with keyboard/mouse focus (`follow-focus`).
+- **Config**: an `[audio]` table in `niox.toml` (`enabled`, `mode`,
+  `latency_ms`), applied by reload like the rest.
+- **Active seat**: with more than one user running niox-session, the
+  user active at the machine's seat gets the audio.
+- **Headless hosts** run niox-session under a lingering user in the
+  `niox` and `audio` groups (see the README).
+
 ## 0.1.0 — 2026-11-26
 
 First release: keyboard/mouse sharing between Linux machines on a LAN.
