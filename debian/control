@@ -3,7 +3,8 @@ Section: utils
 Priority: optional
 Maintainer: Nicholas Yoder <nicholasyoder@proton.me>
 # cargo/rustc come from rustup (rust-toolchain.toml); Debian's are too old.
-Build-Depends: debhelper-compat (= 13)
+# libroc, libpipewire, and libclang (bindgen) are for niox-session's audio.
+Build-Depends: debhelper-compat (= 13), pkgconf, libroc-dev (>= 0.4), libpipewire-0.3-dev, libclang-dev
 Standards-Version: 4.7.0
 Homepage: https://github.com/nicholasyoder/niox
 Rules-Requires-Root: no
@@ -16,3 +17,15 @@ Description: Share one keyboard and mouse across Linux machines over the LAN
  over an encrypted UDP transport, switching between them with a hotkey.
  nioxd runs as a system service from boot, so it works at the login screen
  and on a host with nobody logged in. nioxctl shows and controls it.
+
+Package: niox-session
+Architecture: any
+Depends: niox (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Description: niox audio: the optional per-user service
+ niox-session is the optional, unprivileged half of niox, run per user
+ under systemctl --user. It carries audio over nioxd's encrypted
+ transport: a client's system audio plays on its host, mixed with the
+ host's other clients or following keyboard/mouse focus. It's a separate
+ package so that keyboard/mouse-only installs don't need libroc or
+ libpipewire. The user unit is enabled for every user and starts for
+ members of the niox group.

@@ -1,13 +1,15 @@
 #!/usr/bin/make -f
 # Built by build.sh inside a Debian container with rustup's toolchain.
 
+# installsystemduser (compat 13's default) enables niox-session's user unit
+# (debian/niox-session.user.service, a link to dist/) for every user.
 # installsysusers: the niox group (debian/niox.sysusers), which debhelper
 # compat 13 doesn't run by default.
 %:
 	dh $@ --with installsysusers
 
 override_dh_auto_build:
-	cargo build --release --locked -p nioxd -p nioxctl
+	cargo build --release --locked -p nioxd -p nioxctl -p niox-session
 
 # The workspace's tests run in development (cargo test), not here.
 override_dh_auto_test:
@@ -20,3 +22,4 @@ override_dh_auto_install:
 	install -Dm644 dist/nioxd.service debian/niox/usr/lib/systemd/system/nioxd.service
 	install -Dm644 dist/niox.firewalld.xml debian/niox/usr/lib/firewalld/services/niox.xml
 	install -dm755 debian/niox/etc/niox
+	install -Dm755 target/release/niox-session debian/niox-session/usr/bin/niox-session

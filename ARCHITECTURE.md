@@ -589,9 +589,18 @@ once it has a design.
   (`bin_t` started by systemd), so it needs no policy module for
   evdev/uinput access.
 - `niox-session.service` — niox-session's `systemctl --user` unit
-  (`ConditionGroup=niox`, `WantedBy=default.target`). It goes into the
-  packages with audio, in its own subpackage so KM-only installs don't
-  pull in libroc or libpipewire.
+  (`ConditionGroup=niox`, `WantedBy=default.target`), shipped with
+  niox-session in its own subpackage (`niox-session`, depending on the
+  exact same `niox`), so KM-only installs don't pull in libroc or
+  libpipewire. Installing it enables the unit globally (`systemctl
+  --global enable`; the RPM's scriptlet, and `dh_installsystemduser`),
+  regardless of presets, as nioxd is: installing it is the opt-in, and
+  the group condition keeps it to niox users. Removal disables it and
+  stops running instances, which gives each user's default output back.
+  - A headless host runs it under a lingering user in the `niox` and
+    `audio` groups: logind only grants the sound card to the user active
+    on the seat, so a lingering user with no seat session needs the
+    group for its PipeWire to see the card.
 - Platform priority: Linux only for now. macOS, Windows, and mobile are
   deferred (see below).
 

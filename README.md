@@ -37,14 +37,14 @@ A Cargo workspace; crates are added as the roadmap reaches them.
 ## Development
 
 `cargo test` across the workspace needs libroc and libclang, for the
-audio crates: `sudo dnf install roc-toolkit-devel clang-devel` (Debian:
-`libroc-dev libclang-dev`).
+audio crates: `sudo dnf install roc-toolkit-devel pipewire-devel clang-devel` (Debian:
+`libroc-dev libpipewire-0.3-dev libclang-dev`).
 
 ## Building and installing
 
-`./build.sh` builds an RPM (with rpmbuild) and a `.deb` (in a Debian
+`./build.sh` builds the RPMs (with rpmbuild) and `.deb`s (in a Debian
 container, with podman) into `target/dist/`; `./build.sh rpm` or
-`./build.sh deb` builds just one. Installing either one enables and
+`./build.sh deb` builds just one. Installing the `niox` package enables and
 starts `nioxd`, which writes `/etc/niox/niox.toml` with a fresh keypair.
 Then, on each machine:
 
@@ -57,6 +57,31 @@ Then, on each machine:
    `nioxctl status`.
 4. Fedora: `sudo firewall-cmd --permanent --add-service=niox && sudo firewall-cmd --reload`
    to open UDP 4777.
+
+### Audio
+
+Audio is the separate `niox-session` package (`sudo dnf install
+niox-session-*.rpm`, or `sudo apt install ./niox-session_*.deb`), so
+keyboard/mouse-only installs don't need libroc or libpipewire. Install
+it on the host and on each client whose audio should play on the host.
+Its user unit is enabled for every user on install and starts at login
+for members of the `niox` group (step 1 above). On a client, it makes a
+"niox → host" output the default while the host is connected; on the
+host, each client's audio plays to the default output. `[audio]` in
+`niox.toml` turns it off or switches it to follow keyboard/mouse focus
+(see ARCHITECTURE.md's Config section).
+
+A headless host, where nobody logs in, needs a user to run it:
+
+    sudo useradd -m niox-audio          # or any existing user
+    sudo usermod -aG niox,audio niox-audio
+    sudo loginctl enable-linger niox-audio
+
+Lingering starts that user's service manager (and PipeWire) at boot,
+without a login. The `audio` group gives it the sound card, which
+logind otherwise only gives the user logged in at the seat. If someone
+does log in at the host with niox-session running, the audio follows
+the active user.
 
 ## License
 

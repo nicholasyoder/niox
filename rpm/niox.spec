@@ -21,6 +21,11 @@ BuildRequires:  cargo >= 1.100
 BuildRequires:  rust >= 1.100
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  firewalld-filesystem
+# niox-session's audio: libroc and libpipewire, with bindgen (libclang)
+# generating libroc's bindings.
+BuildRequires:  pkgconfig(roc) >= 0.4
+BuildRequires:  pkgconfig(libpipewire-0.3)
+BuildRequires:  clang-devel
 
 Requires:       firewalld-filesystem
 Requires(post): firewalld-filesystem
@@ -30,6 +35,19 @@ niox shares one machine's keyboard and mouse with other Linux machines
 over an encrypted UDP transport, switching between them with a hotkey.
 nioxd runs as a system service from boot, so it works at the login screen
 and on a host with nobody logged in. nioxctl shows and controls it.
+
+%package session
+Summary:        niox audio: the optional per-user service
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+
+%description session
+niox-session is the optional, unprivileged half of niox, run per user
+under systemctl --user. It carries audio over nioxd's encrypted
+transport: a client's system audio plays on its host, mixed with the
+host's other clients or following keyboard/mouse focus. It's a separate
+package so that keyboard/mouse-only installs don't need libroc or
+libpipewire. The user unit is enabled for every user and starts for
+members of the niox group.
 
 %prep
 %autosetup -n %{name}-%{version}
@@ -44,12 +62,14 @@ directory = "vendor"
 EOF
 
 %build
-cargo build --release --frozen --offline -p nioxd -p nioxctl
+cargo build --release --frozen --offline -p nioxd -p nioxctl -p niox-session
 
 %install
 install -Dm755 target/release/nioxd %{buildroot}%{_bindir}/nioxd
 install -Dm755 target/release/nioxctl %{buildroot}%{_bindir}/nioxctl
+install -Dm755 target/release/niox-session %{buildroot}%{_bindir}/niox-session
 install -Dm644 dist/nioxd.service %{buildroot}%{_unitdir}/nioxd.service
+install -Dm644 dist/niox-session.service %{buildroot}%{_userunitdir}/niox-session.service
 install -Dm644 dist/niox.sysusers %{buildroot}%{_sysusersdir}/niox.conf
 install -Dm644 dist/niox.firewalld.xml %{buildroot}%{_prefix}/lib/firewalld/services/niox.xml
 # nioxd writes niox.toml (with a fresh keypair) on first start. It's not a
@@ -71,6 +91,20 @@ fi
 %postun
 %systemd_postun_with_restart nioxd.service
 
+%post session
+# Enabled for every user on install regardless of presets, as nioxd is:
+# installing it is how audio is opted into. ConditionGroup=niox keeps it
+# from starting for users outside the niox group.
+if [ $1 -eq 1 ]; then
+    systemctl --global enable niox-session.service >/dev/null 2>&1 || :
+fi
+
+%preun session
+%systemd_user_preun niox-session.service
+
+%postun session
+%systemd_user_postun_with_restart niox-session.service
+
 %files
 %license LICENSE
 %doc README.md CHANGELOG.md
@@ -80,6 +114,11 @@ fi
 %{_sysusersdir}/niox.conf
 %{_prefix}/lib/firewalld/services/niox.xml
 %dir %{_sysconfdir}/niox
+
+%files session
+%license LICENSE
+%{_bindir}/niox-session
+%{_userunitdir}/niox-session.service
 
 %changelog
 * Thu Nov 26 2026 Nicholas Yoder <nicholasyoder@proton.me> - 0.1.0-1

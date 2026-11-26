@@ -287,7 +287,7 @@ are and just get checked off; nothing moves into this section.
   *Verification*: two clients mix cleanly. In follow-focus mode, cycling
   focus mutes and unmutes the right streams.
 
-- [ ] **Audio packaging** — niox-session and its user unit in the RPM
+- [x] **Audio packaging** — niox-session and its user unit in the RPM
   and `.deb`. libroc becomes a runtime dependency, so put niox-session
   in its own subpackage and keep KM-only installs free of
   `roc-toolkit`. Document enabling it under a lingering user on a

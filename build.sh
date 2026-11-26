@@ -61,18 +61,21 @@ build_deb() {
         -v niox-deb-rustup:/root/.rustup \
         -v niox-deb-cargo:/root/.cargo \
         docker.io/library/debian:trixie sh -euc "
+            mkdir /build && cd /build
+            tar -xzf /src/niox.tar.gz
+            cd niox-$version
+            export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends \
-                build-essential debhelper ca-certificates curl >/dev/null
+            apt-get install -qq -y --no-install-recommends \
+                build-essential ca-certificates curl >/dev/null
+            # debian/control's Build-Depends.
+            apt-get build-dep -qq -y --no-install-recommends ./ >/dev/null
             if [ ! -x /root/.cargo/bin/rustup ]; then
                 curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain none
             fi
             export PATH=/root/.cargo/bin:\$PATH
-            mkdir /build && cd /build
-            tar -xzf /src/niox.tar.gz
-            cd niox-$version
             dpkg-buildpackage -us -uc -b
-            cp ../niox_*.deb /out/
+            cp ../niox_*.deb ../niox-session_*.deb /out/
         "
 }
 
