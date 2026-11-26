@@ -45,7 +45,7 @@ use spa::utils::result::AsyncSeq;
 use tracing::{debug, info, warn};
 
 use crate::Receiver;
-use crate::streams::{Delivery, FORMAT, Out, Plan, Streams};
+use crate::streams::{Delivery, FORMAT, Fader, Out, Plan, Streams};
 
 /// The niox sink's node name, which the default-output setting refers to.
 pub const SINK_NAME: &str = "niox_sink";
@@ -235,7 +235,7 @@ struct Sink {
 }
 
 struct Player {
-    _listener: StreamListener<Vec<f32>>,
+    _listener: StreamListener<Playback>,
     _stream: StreamRc,
     receiver: Arc<Receiver>,
 }
@@ -553,6 +553,12 @@ fn format_param() -> Vec<u8> {
 
 const FRAME_BYTES: usize = 2 * size_of::<f32>();
 
+/// A player's state on the PipeWire thread.
+struct Playback {
+    samples: Vec<f32>,
+    fader: Fader,
+}
+
 fn make_sink(state: &Rc<RefCell<State>>, plan: &Plan) -> Result<Sink, pw::Error> {
     let core = state.borrow().core.clone();
     let streams = Arc::clone(&state.borrow().streams);
@@ -660,10 +666,15 @@ fn make_player(
             *pw::keys::APP_NAME => "niox",
         },
     )?;
+    let playback = Playback {
+        samples: Vec::new(),
+        // Starts where the plan has it: a muted client starts silent.
+        fader: Fader::new(streams.gain(peer)),
+    };
     let peer = peer.to_owned();
     let playing = Arc::clone(&receiver);
     let listener = stream
-        .add_local_listener_with_user_data(Vec::<f32>::new())
+        .add_local_listener_with_user_data(playback)
         .state_changed({
             let peer = peer.clone();
             move |_, _, old, new| {
@@ -674,7 +685,8 @@ fn make_player(
                 }
             }
         })
-        .process(move |stream, samples| {
+        .process(move |stream, playback| {
+            let Playback { samples, fader } = playback;
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
@@ -690,7 +702,7 @@ fn make_player(
                 frames = frames.min(requested);
             }
             samples.resize(frames * 2, 0.0);
-            streams.play(&peer, &playing, samples);
+            streams.play(&peer, &playing, fader, samples);
             for (out, sample) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(samples.iter()) {
                 *out = sample.to_le_bytes();
             }

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use niox_audio::{Engine, Plan};
 use niox_ipc::audio::MAX_PACKET;
-use niox_ipc::{AudioChannel, Role};
+use niox_ipc::{AudioChannel, AudioMode, Role, Target};
 use tracing::{debug, info, warn};
 
 use crate::view::View;
@@ -133,11 +133,22 @@ pub fn plan(view: &View, granted: bool) -> Plan {
             .map(|p| p.name.clone())
             .collect()
     };
+    let receive_from: Vec<String> = named(Role::Client, false);
+    let muted = match view.audio.mode {
+        AudioMode::AlwaysMix => Vec::new(),
+        // Only the focused client is heard; with focus on the host, none.
+        AudioMode::FollowFocus => receive_from
+            .iter()
+            .filter(|name| !matches!(&view.focus, Some(Target::Client(f)) if f == *name))
+            .cloned()
+            .collect(),
+    };
     Plan {
         // Only hosts that are there: with none, the machine's audio stays
         // on its own outputs.
         send_to: named(Role::Host, true),
-        receive_from: named(Role::Client, false),
+        receive_from,
+        muted,
         latency,
     }
 }
@@ -201,9 +212,41 @@ mod tests {
             Plan {
                 send_to: vec!["office".into()],
                 receive_from: vec!["desk".into(), "laptop".into()],
+                muted: vec![],
                 latency: Duration::from_millis(150),
             }
         );
+    }
+
+    #[test]
+    fn follow_focus_mutes_every_client_but_the_focused_one() {
+        let mut view = view(true);
+        view.audio.mode = AudioMode::FollowFocus;
+        let muted = |focus: Option<Target>| {
+            let view = View {
+                focus,
+                ..view.clone()
+            };
+            plan(&view, true).muted
+        };
+        assert_eq!(
+            muted(Some(Target::Client("desk".into()))),
+            vec!["laptop".to_owned()]
+        );
+        assert_eq!(
+            muted(Some(Target::Client("laptop".into()))),
+            vec!["desk".to_owned()]
+        );
+        assert_eq!(
+            muted(Some(Target::Host)),
+            vec!["desk".to_owned(), "laptop".to_owned()]
+        );
+        // Focus on a peer that isn't a client (a stale event) mutes all.
+        assert_eq!(muted(Some(Target::Client("office".into()))).len(), 2);
+        // Every client is heard in always-mix, wherever focus is.
+        view.audio.mode = AudioMode::AlwaysMix;
+        view.focus = Some(Target::Host);
+        assert!(plan(&view, true).muted.is_empty());
     }
 
     #[test]

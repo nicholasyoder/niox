@@ -390,6 +390,14 @@ user session.
       client has sent nothing for 5s is removed, so an idle client
       doesn't keep the host's output awake. A new latency target remakes
       the players.
+    - *Mixing and focus-follow.* Each client has its own player, so
+      PipeWire mixes them; niox's part is a gain per client, 1 or 0. In
+      `always-mix` every client plays. In `follow-focus` the plan mutes
+      every client but the one with keyboard/mouse focus (all of them
+      while the host has it), recomputed on every focus event. A muted
+      client's audio is still received and decoded, and its player keeps
+      running silent, so unmuting is immediate, with no new stream for
+      Roc to pick up. Gain changes fade over 20ms rather than clicking.
     - Both directions move through the engine on the PipeWire thread,
       with no realtime thread: capture encodes and hands bodies to the
       channel with a send that never waits, and a player decodes and

@@ -279,7 +279,7 @@ are and just get checked off; nothing moves into this section.
   host. After `kill -9` of the client's niox-session, its local audio
   plays normally again.
 
-- [ ] **Audio: multi-client mixing + focus-follow** — one receiver per
+- [x] **Audio: multi-client mixing + focus-follow** — one receiver per
   client, a mixer with per-client gain (fixed at 1.0 or 0), and
   follow-focus vs. always-mix driven by focus events from nioxd. Each
   client already gets its own receiver and PipeWire playback stream

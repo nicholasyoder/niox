@@ -38,6 +38,10 @@ pub(crate) const IDLE_CHECKS: u32 = 5;
 /// Idle checks with a sender connected before its latency is logged.
 const LATENCY_REPORT: u32 = 3;
 
+/// How long a [`Fader`] takes to go between muted and full volume, so a
+/// focus change doesn't click.
+const FADE: Duration = Duration::from_millis(20);
+
 /// Where outgoing bodies go: the peer's name and one `Subsystem::Audio`
 /// body. Must never block.
 pub type Out = Arc<dyn Fn(&str, &[u8]) + Send + Sync>;
@@ -51,6 +55,10 @@ pub struct Plan {
     pub send_to: Vec<String>,
     /// Clients whose audio to play here, once it arrives.
     pub receive_from: Vec<String>,
+    /// Clients in `receive_from` to play at gain 0 (follow-focus mode's
+    /// unfocused clients). Their audio is still received and decoded, so
+    /// unmuting is immediate, with no new stream to pick up.
+    pub muted: Vec<String>,
     /// The receivers' latency target.
     pub latency: Duration,
 }
@@ -126,6 +134,15 @@ impl Streams {
     /// for a different latency).
     pub(crate) fn set_plan(&self, plan: Plan) -> Vec<String> {
         let old = std::mem::replace(&mut *lock(&self.plan), plan.clone());
+        for peer in &plan.receive_from {
+            match (old.muted.contains(peer), plan.muted.contains(peer)) {
+                (false, true) => info!(peer, "muted a client's audio"),
+                (true, false) if old.receive_from.contains(peer) => {
+                    info!(peer, "unmuted a client's audio");
+                }
+                _ => {}
+            }
+        }
         {
             let mut senders = lock(&self.senders);
             senders.retain(|peer, _| plan.send_to.contains(peer));
@@ -293,12 +310,61 @@ impl Streams {
         }
     }
 
-    /// Fills `samples` (interleaved, [`FORMAT`]) with `peer`'s audio,
-    /// sending the receiver's feedback back to it.
-    pub(crate) fn play(&self, peer: &str, receiver: &Receiver, samples: &mut [f32]) {
+    /// The gain the plan gives `peer`'s audio: 0 if muted, else 1.
+    pub(crate) fn gain(&self, peer: &str) -> f32 {
+        if lock(&self.plan).muted.iter().any(|p| p == peer) {
+            0.0
+        } else {
+            1.0
+        }
+    }
+
+    /// Fills `samples` (interleaved, [`FORMAT`]) with `peer`'s audio at
+    /// the plan's gain, faded by `fader`, sending the receiver's feedback
+    /// back to it.
+    pub(crate) fn play(
+        &self,
+        peer: &str,
+        receiver: &Receiver,
+        fader: &mut Fader,
+        samples: &mut [f32],
+    ) {
+        // Decoded even when muted, so the stream stays current.
         if let Err(e) = receiver.pop(samples, |body| (self.out)(peer, body)) {
             debug!(peer, "decoding audio: {e}");
             samples.fill(0.0);
+        }
+        fader.apply(samples, self.gain(peer));
+    }
+}
+
+/// A player's gain, moving toward its target over [`FADE`] rather than
+/// jumping.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Fader {
+    gain: f32,
+}
+
+impl Fader {
+    pub(crate) fn new(gain: f32) -> Self {
+        Self { gain }
+    }
+
+    /// Scales interleaved stereo `samples`, moving the gain toward
+    /// `target` one step per frame.
+    pub(crate) fn apply(&mut self, samples: &mut [f32], target: f32) {
+        let step = 1.0 / (FADE.as_secs_f32() * FORMAT.rate as f32);
+        for frame in samples.chunks_mut(2) {
+            if self.gain < target {
+                self.gain = (self.gain + step).min(target);
+            } else if self.gain > target {
+                self.gain = (self.gain - step).max(target);
+            }
+            if self.gain != 1.0 {
+                for s in frame {
+                    *s *= self.gain;
+                }
+            }
         }
     }
 }
@@ -342,13 +408,13 @@ mod tests {
         );
         client.set_plan(Plan {
             send_to: vec!["host".into()],
-            receive_from: vec![],
             latency: Duration::from_millis(40),
+            ..Plan::default()
         });
         host.set_plan(Plan {
-            send_to: vec![],
             receive_from: vec!["client".into()],
             latency: Duration::from_millis(40),
+            ..Plan::default()
         });
         // Feedback from the host goes straight back to the client.
         let feedback = {
@@ -381,6 +447,7 @@ mod tests {
         let mut out = vec![0f32; 960];
         let mut energy = 0.0;
         let mut wants = 0;
+        let mut fader = Fader::new(1.0);
         for chunk in 0..200 {
             client.capture_at(
                 &tone(chunk),
@@ -393,7 +460,7 @@ mod tests {
                 }
             }
             if let Some(receiver) = &receiver {
-                host.play("client", receiver, &mut out);
+                host.play("client", receiver, &mut fader, &mut out);
                 if chunk >= 100 {
                     energy += out.iter().map(|s| s * s).sum::<f32>();
                 }
@@ -460,11 +527,106 @@ mod tests {
     }
 
     #[test]
+    fn faders_ramp_without_jumping() {
+        let frames = (FADE.as_secs_f32() * FORMAT.rate as f32) as usize;
+        let mut fader = Fader::new(1.0);
+        let mut ones = vec![1.0f32; 2 * frames];
+        fader.apply(&mut ones, 0.0);
+        // Both channels of a frame get the same gain, and it falls a step
+        // a frame, reaching 0 at the end of the fade.
+        for frame in ones.chunks(2) {
+            assert_eq!(frame[0], frame[1]);
+        }
+        for pair in ones.windows(2) {
+            assert!(pair[0] - pair[1] < 2.0 / frames as f32);
+        }
+        assert!(ones[ones.len() - 1].abs() < 1e-3);
+        let mut more = vec![1.0f32; 20];
+        fader.apply(&mut more, 0.0);
+        assert!(more.iter().all(|&s| s == 0.0));
+        // And back up.
+        let mut ones = vec![1.0f32; 2 * frames + 20];
+        fader.apply(&mut ones, 1.0);
+        assert!(ones[0] < 0.01);
+        assert!(ones[2 * frames..].iter().all(|&s| s == 1.0));
+        assert_eq!(fader, Fader::new(1.0));
+    }
+
+    /// Two clients' streams into one host, and how loud each plays there.
+    #[test]
+    fn muted_clients_stay_decoded_and_silent() {
+        let (to_host, from_clients) = mpsc::channel::<(String, Vec<u8>)>();
+        let client = |name: &'static str| {
+            let to_host = Mutex::new(to_host.clone());
+            let streams = Streams::new(Arc::new(move |_: &str, body: &[u8]| {
+                lock(&to_host).send((name.into(), body.to_vec())).unwrap();
+            }))
+            .unwrap();
+            streams.set_plan(Plan {
+                send_to: vec!["host".into()],
+                latency: Duration::from_millis(40),
+                ..Plan::default()
+            });
+            streams
+        };
+        let (a, b) = (client("a"), client("b"));
+        let host = Streams::new(Arc::new(|_: &str, _: &[u8]| {})).unwrap();
+        let mut plan = Plan {
+            receive_from: vec!["a".into(), "b".into()],
+            muted: vec!["b".into()],
+            latency: Duration::from_millis(40),
+            ..Plan::default()
+        };
+        host.set_plan(plan.clone());
+        let start = Instant::now();
+        let mut players: HashMap<String, (Arc<Receiver>, Fader)> = HashMap::new();
+        let mut out = vec![0f32; 960];
+        let mut run = |chunks: std::ops::Range<usize>| {
+            let mut energy: HashMap<String, f32> = HashMap::new();
+            for chunk in chunks.clone() {
+                let at = start + Duration::from_millis(10 * chunk as u64);
+                a.capture_at(&tone(chunk), at);
+                b.capture_at(&tone(chunk), at);
+                for (peer, body) in from_clients.try_iter() {
+                    if host.deliver(&peer, &body) == Delivery::Want {
+                        let receiver = host.add_receiver(&peer).unwrap().unwrap();
+                        let fader = Fader::new(host.gain(&peer));
+                        players.insert(peer, (receiver, fader));
+                    }
+                }
+                for (peer, (receiver, fader)) in &mut players {
+                    host.play(peer, receiver, fader, &mut out);
+                    if chunk >= chunks.start + 50 {
+                        *energy.entry(peer.clone()).or_default() +=
+                            out.iter().map(|s| s * s).sum::<f32>();
+                    }
+                }
+            }
+            let n = ((chunks.len() - 50) * 960) as f32;
+            let rms = |p: &str| (energy.get(p).copied().unwrap_or_default() / n).sqrt();
+            (rms("a"), rms("b"), players.len())
+        };
+        let full = 0.5 / 2f32.sqrt();
+        let (ra, rb, playing) = run(0..150);
+        assert!((ra - full).abs() < 0.05, "a {ra}");
+        assert_eq!(rb, 0.0, "b is muted");
+        assert_eq!(playing, 2, "a muted client still has its player");
+
+        // Focus moves to b: the same receivers, the gains swapped.
+        plan.muted = vec!["a".into()];
+        assert!(host.set_plan(plan).is_empty());
+        let (ra, rb, _) = run(150..300);
+        assert_eq!(ra, 0.0, "a is muted");
+        assert!((rb - full).abs() < 0.05, "b {rb}");
+    }
+
+    #[test]
     fn a_pause_restarts_the_stream() {
         let (client, host, from_client) = pair();
         let start = Instant::now();
         let mut receiver = None;
         let mut out = vec![0f32; 960];
+        let mut fader = Fader::new(1.0);
         let mut feed = |chunk: usize, at: Instant| {
             client.capture_at(&tone(chunk), at);
             for (peer, body) in from_client.try_iter() {
@@ -473,7 +635,7 @@ mod tests {
                 }
             }
             if let Some(receiver) = &receiver {
-                host.play("client", receiver, &mut out);
+                host.play("client", receiver, &mut fader, &mut out);
             }
             out.iter().map(|s| s * s).sum::<f32>()
         };
