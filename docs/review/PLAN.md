@@ -16,8 +16,7 @@ security, then the control plane, audio, and the rest.
   see what is and isn't covered.
 - **Small fixes** (a few lines, obviously right, covered by a test where
   one makes sense) are committed to `develop` as the review goes, one
-  logical fix per commit, with the checks in CLAUDE.md passing. A fix to
-  shipped KM behavior can be cherry-picked to `master` later.
+  logical fix per commit, with the checks in CLAUDE.md passing.
 - **Anything larger** goes in [FINDINGS.md](FINDINGS.md) under the
   session's heading: what's wrong, where, a failure scenario, a severity,
   and a suggested fix. Don't fix these during the review.

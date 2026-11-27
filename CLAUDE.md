@@ -49,14 +49,14 @@ outside tests.
 
 Two long-lived branches:
 
-- **master** is the release line. Releases are cut from it. Only fixes to
-  shipped behavior (e.g. KM bugs found in daily use) are committed here
-  directly.
-- **develop** is where roadmap feature work happens (currently audio).
+- **develop** is where all work happens: roadmap steps, bug fixes
+  (including fixes to shipped behavior), and review fixes.
+- **master** is the release line. Work reaches it only when a release is
+  being cut: merge develop into master, then commit any fix-ups the
+  release itself needs (version bumps, packaging) on master, and merge
+  master back into develop afterward.
 
-After a fix lands on master, merge master into develop. Merge develop into
-master only when it's time for a release. Don't force-push or rewrite
-published history.
+Don't force-push or rewrite published history.
 
 Commits are one logical unit each, usually one roadmap step, with the
 step's name as the subject. The body says what changed and why, grouped
