@@ -512,7 +512,7 @@ niox/
     niox-roc/          # bindgen bindings to libroc's encoder/decoder (the only FFI crate)
     niox-transport/    # Noise handshake + AEAD-wrapped UDP, shared by subsystems
     niox-ipc/          # UDS control channel (nioxd <-> niox-session/nioxctl)
-    niox-settings/     # bin: egui settings window over the nioxd socket
+    niox-settings/     # bin: egui settings window over the nioxd socket (planned)
     niox-config/       # shared TOML config loading
 ```
 
