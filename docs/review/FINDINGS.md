@@ -132,3 +132,107 @@ harmless, since the reload republishes everything.
 
 - **Fix:** one `Status` constructor taking the config plus an optional
   live view. Key published peers by index or public key, not by name.
+
+## Transport
+
+Fixed during the review (on `develop`):
+
+- The driver reset its socket's receive timeout (a `setsockopt`) before
+  nearly every datagram, since the wait to the next deadline shrinks
+  continuously. A client receiving 1 kHz of KM frames paid a syscall per
+  frame. (`84751fa`)
+- A resolver stopped by `update_peer` could write the old address after
+  the new one landed, and for an IP literal nothing corrected it.
+  (`54a3760`)
+
+Checked and found sound: the KK pattern and prologue, the init-timestamp
+check (and that a replayed init can't replace a live session, since the
+responder's session stays unconfirmed), the replay window's edges and
+far jumps, index allocation, `classify`'s length checks, and the locks
+on the send path (an uncontended `RwLock` read and a `Mutex` per
+datagram, no allocation).
+
+### TR-1: a forged handshake init costs two DHs per configured peer (medium)
+
+`crates/niox-transport/src/endpoint/driver.rs`, `on_init`.
+
+An init carries no peer hint, so the driver trial-decrypts it against
+every peer's key, and each `respond` does the `es` and `ss` DHs before
+the AEAD check can fail. That's about 120µs per peer on a desktop x86
+(release build), and several times that on a Raspberry Pi. Any host on
+the LAN can send 64-byte garbage inits: with three peers, about 2,800 a
+second (1.4 Mbit/s) fills the driver thread. Real datagrams then queue
+behind them and drop, keepalives stop arriving, and every peer is
+declared down, so KM stops. Each forged init also allocates the peer
+order `Vec` and calls `getrandom` once per peer, which is minor next to
+the DHs.
+
+- **Fix:** add a MAC to the init that's checked before any DH, as
+  WireGuard's `mac1` is. Key it per peer pair, from the static-static DH
+  (`HASH("niox mac" || DH(s_local, s_peer))`) computed once when a peer
+  is added. Only the two peers can produce it, and it also names the
+  peer, so the trial loop becomes N cheap MACs and at most one
+  `respond`. Also cap inits processed per second (a global token
+  bucket), so even valid-looking floods are bounded. The init grows by
+  16 bytes, a wire-format change, so bump `PROTOCOL_VERSION` and the
+  prologue.
+
+### TR-2: sessions never rekey (low)
+
+`crates/niox-transport/src/endpoint/driver.rs`.
+
+A session lives as long as the link, which can be weeks. Anyone who
+records the traffic and later reads one session key from memory
+decrypts everything since that session began, keystrokes included.
+WireGuard bounds this by rekeying every 2 minutes. The static key
+alone doesn't expose past sessions (KK's ephemerals see to that), so
+this only matters for memory compromise, hence low.
+
+The catch is that today replacing a session reports `Event::Down` then
+`Event::Up`, which KM treats as a peer restart (release everything,
+resend caps). A rekey needs its own path.
+
+- **Fix:** the initiator of the current session re-handshakes after a
+  set age (say 2 minutes) while up. On completion, the new session
+  replaces the old one silently. Keep the old one for receiving until
+  the first datagram arrives on the new one (or a short grace period),
+  so in-flight datagrams aren't lost. Report `Down`/`Up` only for a
+  handshake that started while down or came from a restarted peer.
+
+### TR-3: answering an init gives up this side's own pending handshake (low)
+
+`crates/niox-transport/src/endpoint/driver.rs`, `on_init_accepted`.
+
+Answering an init drops `pending` and pushes `retry_at` out by
+`dead_after` (3.5s), trusting the peer to finish. But an init that
+authenticates isn't necessarily live. After this side restarts,
+`newest_init` is empty, so any recorded init from the peer passes, as
+does any init this side never saw before (lost, or ignored by the
+tie-break). Replaying one while this side is down discards its own init
+in flight: the peer's real response to it then finds no pending
+handshake and is dropped, and reconnecting waits out the 3.5s. An
+attacker with a stock of recorded inits (a new one every 15s while
+down, and one per re-handshake) can repeat this once per init, each
+newer than the last.
+
+- **Fix:** while down, keep `pending` when answering an init, and take
+  whichever handshake completes first: a response to ours, or
+  confirmation of theirs. Then drop the other. Check that this can't
+  make both sides establish different sessions and flap; the tie-break
+  may need to apply here too. At the least, push `retry_at` out by a
+  short confirm timeout rather than the full `dead_after`.
+
+### TR-4: replies follow any authenticated datagram, even an old one (low)
+
+`crates/niox-transport/src/endpoint/driver.rs`, `on_data`.
+
+The route moves to the source of any datagram that authenticates,
+including one reordered behind newer ones. An attacker who can capture
+a datagram and deliver it before the original (or drop the original)
+can resend it from another source and redirect this side's replies
+there until the next genuine datagram arrives (at most a keepalive
+interval, 1s). WireGuard behaves the same way. It's an on-path
+attacker, who could drop the traffic anyway, so this is only hardening.
+
+- **Fix:** have `Session::open` report whether the counter was the
+  newest yet seen, and roam only on those.

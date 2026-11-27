@@ -36,7 +36,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
   per-frame cost on the capture → send and receive → uinput paths,
   hot-plug.
   Commits: `a1e3899`, `859c236`, `d06665e`, `94ff494`.
-- [ ] **Transport** (about 4k lines): `niox-transport` (packet, handshake,
+- [x] **Transport** (about 4k lines): `niox-transport` (packet, handshake,
   replay, session, endpoint, driver, resolve) and its tests.
   Focus:
   - Noise KK use and the init-timestamp replay check.
@@ -49,6 +49,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
   - Locks and allocations in `seal_and_send` (the KM send path), and
     driver-thread blocking.
   - Liveness timer edges, and peer add, remove, and update races.
+  Commits: `84751fa`, `54a3760`.
 - [ ] **Control plane** (about 4.5k lines): `niox-ipc` (protocol, server,
   publisher, client, arbiter, fds, seat, audio), `niox-config` (load,
   write, validate, raw, address, key), `nioxctl`, `nioxd/src/audio.rs`.
