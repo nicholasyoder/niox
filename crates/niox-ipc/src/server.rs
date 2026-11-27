@@ -455,8 +455,9 @@ fn serve(shared: &Shared, id: u64, uid: Option<u32>, stream: UnixStream) {
     shared.publisher.unsubscribe(id);
     shared.arbitrate_audio(|a| a.remove(id));
     drop(tx);
-    // The writer finishes what's queued (e.g. a final error), unless the
-    // client stopped reading, in which case the shutdown below ends it.
+    // The writer finishes what's queued (e.g. a final error) and stops.
+    // If the client stopped reading, a write times out (WRITE_TIMEOUT)
+    // and ends it; a client that closed its end fails the write at once.
     let _ = stream.shutdown(Shutdown::Read);
     if writer.join().is_err() {
         error!(conn = id, "control writer thread panicked");
