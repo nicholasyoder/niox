@@ -380,3 +380,84 @@ creates a stream and a decoder, for as long as the client sends.
   case once, at `warn`, then back off before making that client's
   player again (say 30 seconds), or wait for a sink to appear in the
   registry.
+
+## Cross-cutting
+
+Fixed during the review (on `develop`):
+
+- `nioxd.service` now also sets `ProtectProc=invisible`,
+  `ProcSubset=pid`, `PrivateIPC=yes`, and `UMask=0077`
+  (`systemd-analyze security`: 2.5 to 2.3), checked on the VMs.
+  (`acb2d0f`)
+- `build.sh` checked `debian/changelog`'s version but not the spec's
+  `%changelog`, so an RPM could ship with the last release's entry on
+  top. (`8a379d0`)
+- ARCHITECTURE.md listed `niox-settings` among the crates. (`cd14698`)
+
+Checked and found sound: the rest of `nioxd.service` against what nioxd
+does (every device, address family, and capability it allows is used,
+and `ConfigurationDirectory=` stays writable under
+`ProtectSystem=strict`), the RPM and `.deb` scriptlets (the `niox`
+group exists before nioxd first starts; upgrades restart nioxd and
+never touch `/etc/niox`), `build.sh`'s tarball and vendoring, the dev
+and test-VM scripts, and the three examples. ARCHITECTURE.md's
+constants (timers, backoffs, the replay window, packet sizes) and
+`nioxctl`'s commands match the code. `cargo audit` isn't installed
+here, so advisories weren't checked.
+
+### XC-1: nioxd has no tests (low)
+
+`crates/nioxd` (about 1.6k lines, none of them tested).
+
+The rest of the workspace is well covered, but `nioxd` has no unit or
+integration tests. The riskiest untested part is
+`Running::apply` (`km/mod.rs`), the in-place reload: peers matched by
+public key, ids routed before the transport adds them, the host side
+starting and stopping, a removed focused client released first. It has
+only been checked by hand on the VMs, and the coming config-edits step
+will run it on every edit.
+
+- **Fix:** split the reload diff out of `apply` into a pure function
+  (old config and ids, new config → which peers are kept, renamed,
+  re-roled, readdressed, added, removed, and whether the host side
+  starts or stops) and unit-test its cases. Then a loopback test with
+  two endpoints on `127.0.0.1` for a reload that renames and readdresses
+  a connected peer without its session dropping.
+
+### XC-2: niox-session's user unit isn't sandboxed (low)
+
+`dist/niox-session.service`.
+
+niox-session feeds network audio (from authenticated peers only) to
+libroc's C decoder, but its unit sets no hardening at all. A user unit
+can't drop privileges it doesn't have, but it can still limit what a
+compromised process does as that user.
+
+- **Fix:** add what works in a user manager without breaking PipeWire:
+  `NoNewPrivileges=yes`, `LockPersonality=yes`,
+  `RestrictSUIDSGID=yes`, `SystemCallArchitectures=native`, and
+  `RestrictAddressFamilies=AF_UNIX` (nioxd's socket, the audio channel,
+  PipeWire, and later D-Bus are all Unix sockets). Check
+  `MemoryDenyWriteExecute=` and `RestrictNamespaces=` against the
+  PipeWire and SPA modules it loads. Leave out `RestrictRealtime=`,
+  since PipeWire clients may take realtime scheduling. Verify audio
+  both ways on the VMs.
+
+### XC-3: duplicate crypto and build dependencies (low)
+
+`crates/niox-config/Cargo.toml`, `crates/niox-transport/Cargo.toml`,
+`crates/niox-roc/Cargo.toml`.
+
+`cargo tree -d` shows nioxd linking two X25519 implementations and two
+`getrandom`s. niox-config uses `x25519-dalek` 3 (`curve25519-dalek` 5),
+and it and niox-transport use `getrandom` 0.4, while `snow` 0.10 uses
+`curve25519-dalek` 4 and `getrandom` 0.3. The second copy of security-sensitive code is more to
+audit and patch, not a bug. At build time, niox-roc's `bindgen` 0.73
+duplicates the 0.72 that `pipewire-rs` pulls in (and with it `syn` 3,
+which `clap_derive` also needs).
+
+- **Fix:** move niox-config to `x25519-dalek` 2 (same API for what it
+  uses: `StaticSecret`, `PublicKey::from`, `diffie_hellman`) and both
+  crates to `getrandom` 0.3 until `snow` moves on, and pin niox-roc to `bindgen`
+  0.72 while pipewire-rs is on it. Install `cargo-audit` and run it
+  before each release.
