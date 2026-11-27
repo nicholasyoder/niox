@@ -375,9 +375,10 @@ impl Endpoint {
         let peer = self.handle.shared.peer(id).ok_or(PeerError::NoSuchPeer)?;
         let name: Arc<str> = name.into();
         *lock(&peer.name) = Arc::clone(&name);
-        // Replacing the resolver stops the old one.
-        *lock(&peer.configured) = None;
+        // Stop the old resolver before clearing the address: once its Stop
+        // is dropped, it can no longer write one.
         self.resolvers.remove(&id);
+        *lock(&peer.configured) = None;
         if let Some(stop) =
             resolve::start(self.handle.shared.v6, &peer, &name, &address, self.timers)
                 .map_err(PeerError::Resolver)?

@@ -59,13 +59,6 @@ fn resolve_loop(
     let mut last = None;
     loop {
         let resolved = resolve(host, port);
-        // Stopped while resolving: don't overwrite a newer address.
-        if matches!(
-            stopped.try_recv(),
-            Ok(()) | Err(mpsc::TryRecvError::Disconnected)
-        ) {
-            return;
-        }
         let Some(peer) = peer.upgrade() else {
             return;
         };
@@ -75,14 +68,27 @@ fn resolve_loop(
             let v4 = addrs.iter().find(|a| a.is_ipv4());
             v4.or_else(|| addrs.iter().find(|_| v6)).copied()
         });
-        match addr {
-            Some(addr) => {
-                if last != Some(addr) {
-                    info!(peer = name, %host, %addr, "resolved peer address");
-                }
-                *lock(&peer.configured) = Some(addr);
+        {
+            // Stopped while resolving: don't overwrite a newer address.
+            // Checked under the lock, since the replacement address is set
+            // under it after this thread's Stop is dropped; checking first
+            // and locking after would let a stale write land last.
+            let mut configured = lock(&peer.configured);
+            if matches!(
+                stopped.try_recv(),
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected)
+            ) {
+                return;
             }
-            None => debug!(peer = name, %host, "peer hostname did not resolve"),
+            match addr {
+                Some(addr) => {
+                    if last != Some(addr) {
+                        info!(peer = name, %host, %addr, "resolved peer address");
+                    }
+                    *configured = Some(addr);
+                }
+                None => debug!(peer = name, %host, "peer hostname did not resolve"),
+            }
         }
         last = addr.or(last);
         drop(peer);
