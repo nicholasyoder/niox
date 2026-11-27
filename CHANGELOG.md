@@ -5,12 +5,6 @@ Notable changes to niox, newest first. Versions follow
 bump may break the wire protocol or config. The RPM spec's `%changelog`
 and `debian/changelog` carry a one-line summary of each release.
 
-## Unreleased
-
-- **Fixed**: a host stopped playing a client's audio for good once the
-  client had been quiet for a few seconds, until niox-session was
-  restarted.
-
 ## 0.2.0 — 2026-11-27
 
 Audio: clients' system audio plays on the host.
