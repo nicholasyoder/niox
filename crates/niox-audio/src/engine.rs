@@ -198,7 +198,10 @@ fn run(
             Err(e) => {
                 let message = format!("connecting to PipeWire: {e}");
                 if failing.as_deref() != Some(&message) {
-                    warn!("{message}; retrying until it's available");
+                    warn!(
+                        "{message}; retrying until it's available (niox-session needs PipeWire \
+                         running as this user's sound server, with WirePlumber)"
+                    );
                 } else {
                     debug!("{message}");
                 }

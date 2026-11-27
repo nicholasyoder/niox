@@ -39,6 +39,11 @@ and on a host with nobody logged in. nioxctl shows and controls it.
 %package session
 Summary:        niox audio: the optional per-user service
 Requires:       %{name}%{?_isa} = %{version}-%{release}
+# The PipeWire server and its session manager: libpipewire alone isn't
+# enough. (Fedora's desktops have them already.)
+Requires:       pipewire
+Requires:       wireplumber
+Requires:       pipewire-pulseaudio
 
 %description session
 niox-session is the optional, unprivileged half of niox, run per user

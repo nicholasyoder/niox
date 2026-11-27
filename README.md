@@ -64,6 +64,9 @@ Audio is the separate `niox-session` package (`sudo dnf install
 niox-session-*.rpm`, or `sudo apt install ./niox-session_*.deb`), so
 keyboard/mouse-only installs don't need libroc or libpipewire. Install
 it on the host and on each client whose audio should play on the host.
+It needs PipeWire as the sound server and depends on it (with
+WirePlumber and PipeWire's PulseAudio replacement), so on a machine still
+running PulseAudio, installing it switches that machine to PipeWire.
 Its user unit is enabled for every user on install and starts at login
 for members of the `niox` group (step 1 above). On a client, it makes a
 "niox → host" output the default while the host is connected; on the

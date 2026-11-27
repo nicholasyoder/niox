@@ -20,7 +20,9 @@ Description: Share one keyboard and mouse across Linux machines over the LAN
 
 Package: niox-session
 Architecture: any
-Depends: niox (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+# The PipeWire server, its session manager, and its PulseAudio replacement,
+# so apps' audio reaches the niox sink: libpipewire alone isn't enough.
+Depends: niox (= ${binary:Version}), pipewire-audio, ${shlibs:Depends}, ${misc:Depends}
 Description: niox audio: the optional per-user service
  niox-session is the optional, unprivileged half of niox, run per user
  under systemctl --user. It carries audio over nioxd's encrypted
