@@ -25,7 +25,8 @@ pub const FORMAT: Format = Format {
 /// Audio per packet (902-byte packets; see ARCHITECTURE.md).
 const PACKET_LENGTH: Duration = Duration::from_millis(5);
 
-/// A pause in captured audio longer than this restarts the streams to the
+/// A pause in captured audio longer than this (past the end of the audio
+/// last captured, so a large quantum isn't one) restarts the streams to the
 /// hosts. PipeWire stops running the sink while nothing plays into it,
 /// and a fresh RTP stream is something a receiver picks up cleanly, where
 /// a stream that jumps ahead in time isn't.
@@ -93,8 +94,8 @@ pub(crate) struct Streams {
     /// Each host's playback delay, as it last reported it. Kept apart
     /// from the senders, which a pause replaces.
     output_delays: Mutex<HashMap<String, Duration>>,
-    /// When the sink last captured anything.
-    last_capture: Mutex<Option<Instant>>,
+    /// When the sink last captured anything, and how much audio that was.
+    last_capture: Mutex<Option<(Instant, Duration)>>,
     receivers: Mutex<HashMap<String, Playing>>,
     /// Clients whose first bodies have asked for a receiver that hasn't
     /// been made yet, so each asks once.
@@ -321,9 +322,14 @@ impl Streams {
     }
 
     fn capture_at(&self, samples: &[f32], now: Instant) {
+        let length = Duration::from_secs_f64(
+            (samples.len() / FORMAT.channels.count()) as f64 / f64::from(FORMAT.rate),
+        );
         let gap = lock(&self.last_capture)
-            .replace(now)
-            .is_some_and(|last| now.saturating_duration_since(last) > CAPTURE_GAP);
+            .replace((now, length))
+            .is_some_and(|(last, length)| {
+                now.saturating_duration_since(last) > length + CAPTURE_GAP
+            });
         let mut senders = lock(&self.senders);
         if gap {
             debug!("audio resumed after a pause; starting new streams");
@@ -810,5 +816,35 @@ mod tests {
         }
         let rms = (energy / (50.0 * 960.0)).sqrt();
         assert!((rms - 0.5 / 2f32.sqrt()).abs() < 0.05, "rms {rms}");
+    }
+
+    /// The SSRCs of the source packets among `bodies`: one per stream.
+    fn ssrcs(bodies: &Bodies) -> HashSet<[u8; 4]> {
+        bodies
+            .try_iter()
+            .filter(|(_, body)| body[0] == Channel::Source as u8)
+            .map(|(_, body)| body[9..13].try_into().unwrap())
+            .collect()
+    }
+
+    /// PipeWire may run the sink at a quantum longer than [`CAPTURE_GAP`]:
+    /// audio captured that far apart, but back to back, is one stream.
+    #[test]
+    fn a_large_quantum_is_not_a_pause() {
+        let (client, _host, from_client) = pair();
+        let start = Instant::now();
+        // 8160 frames, 170ms.
+        let quantum: Vec<f32> = (0..17).flat_map(tone).collect();
+        let length = Duration::from_millis(170);
+        for n in 0..10 {
+            client.capture_at(&quantum, start + length * n);
+        }
+        let first = ssrcs(&from_client);
+        assert_eq!(first.len(), 1, "{first:?}");
+        // A real pause after one still restarts it.
+        client.capture_at(&quantum, start + length * 11 + CAPTURE_GAP);
+        let second = ssrcs(&from_client);
+        assert_eq!(second.len(), 1, "{second:?}");
+        assert_ne!(first, second);
     }
 }
