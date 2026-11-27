@@ -117,6 +117,19 @@ impl Switcher {
             return pass; // only key presses and releases get special handling
         }
 
+        // A press of a hotkey key that's already down, or a release of one
+        // that isn't: a key held when its device was grabbed, or the same
+        // key on two keyboards. The state below toggles on each event, so
+        // letting these in would invert it for good (every later press
+        // judged as a release). They pass as ordinary keys, and held-key
+        // tracking drops whichever the target never saw pressed.
+        let is_down = ev.value == KEY_DOWN;
+        if (ev.code == self.key1 && is_down == self.key1_down)
+            || (Some(ev.code) == self.key2 && is_down == self.key2_down)
+        {
+            return pass;
+        }
+
         if ev.code == self.key1 || Some(ev.code) == self.key2 {
             self.prevented_key1_press = false;
             let switch = self.maybe_switch(ev.code);
@@ -245,6 +258,31 @@ mod tests {
     #[test]
     fn single_key_hotkey_switches() {
         run(&mut single(), &[(META, 1, SWALLOW), (META, 0, SWITCH)]);
+    }
+
+    #[test]
+    fn unmatched_hotkey_events_pass_without_desyncing() {
+        // key1 held when its device was grabbed: its release arrives with
+        // no press. Then a second keyboard presses key1 while it's down.
+        for mut s in [single(), combo()] {
+            run(&mut s, &[(META, 0, PASS)]);
+            assert!(s.is_idle());
+            run(&mut s, &[(META, 1, SWALLOW), (META, 1, PASS)]);
+        }
+        run(
+            &mut single(),
+            &[(META, 0, PASS), (META, 1, SWALLOW), (META, 0, SWITCH)],
+        );
+        run(
+            &mut combo(),
+            &[
+                (GRAVE, 0, PASS),
+                (META, 1, SWALLOW),
+                (GRAVE, 1, SWALLOW),
+                (GRAVE, 0, SWALLOW),
+                (META, 0, SWITCH),
+            ],
+        );
     }
 
     #[test]
