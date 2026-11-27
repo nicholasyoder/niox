@@ -6,6 +6,11 @@ audio-switcher. Read [ARCHITECTURE.md](ARCHITECTURE.md) for the design
 and [ROADMAP.md](ROADMAP.md) for what's next. The first unchecked step
 is the current one.
 
+A whole-project code review is in progress, one subsystem per session:
+[docs/review/PLAN.md](docs/review/PLAN.md) says what's left and how a
+session works, and [docs/review/FINDINGS.md](docs/review/FINDINGS.md)
+holds the findings waiting to be fixed.
+
 ## Checks
 
 Every change leaves these passing:
