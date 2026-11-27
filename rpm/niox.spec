@@ -126,6 +126,10 @@ fi
 %{_userunitdir}/niox-session.service
 
 %changelog
+* Fri Nov 27 2026 Nicholas Yoder <nicholasyoder@proton.me> - 0.2.1-1
+- Lip sync: players on a client hold video back by the audio's delay to the
+  host, the host's own output path included.
+
 * Fri Nov 27 2026 Nicholas Yoder <nicholasyoder@proton.me> - 0.2.0-1
 - Audio: clients' system audio plays on the host (niox-session subpackage).
 

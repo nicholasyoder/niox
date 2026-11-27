@@ -5,7 +5,7 @@ Notable changes to niox, newest first. Versions follow
 bump may break the wire protocol or config. The RPM spec's `%changelog`
 and `debian/changelog` carry a one-line summary of each release.
 
-## Unreleased
+## 0.2.1 — 2026-11-27
 
 - **Lip sync on clients**: the "niox → host" output now reports the
   delay its audio picks up on the way to the host, so video players

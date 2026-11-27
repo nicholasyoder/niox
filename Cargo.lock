@@ -645,7 +645,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "niox-audio"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "niox-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "getrandom 0.4.3",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "niox-ipc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix",
  "rustix",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "niox-km"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "niox-roc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bindgen 0.73.2",
  "pkg-config",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "niox-session"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "niox-transport"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "nioxctl"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "nioxd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
