@@ -191,7 +191,15 @@ impl Streams {
             match receiver {
                 Some(receiver) => receiver.receive(body),
                 None => {
-                    let wanted = lock(&self.plan).receive_from.iter().any(|p| p == peer)
+                    // Decided under the plan lock, which `add_receiver`
+                    // holds while it makes the receiver and clears the
+                    // ask. Looking again under it keeps a body that missed
+                    // the receiver from asking for one that now exists:
+                    // that ask would be ignored and never cleared, so
+                    // once the receiver went idle no body could ask again.
+                    let plan = lock(&self.plan);
+                    let wanted = plan.receive_from.iter().any(|p| p == peer)
+                        && !lock(&self.receivers).contains_key(peer)
                         && lock(&self.wanted).insert(peer.to_owned());
                     return if wanted {
                         Delivery::Want
@@ -524,6 +532,48 @@ mod tests {
         }
         assert_eq!(host.idle_check(), vec!["client".to_owned()]);
         assert!(host.idle_check().is_empty());
+    }
+
+    /// Bodies keep arriving (on the channel reader's thread) while the
+    /// receiver they asked for is made: once it's removed as idle, the
+    /// client's next body still asks for a new one.
+    #[test]
+    fn a_client_is_heard_again_after_going_quiet() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+        let (client, host, from_client) = pair();
+        client.capture(&tone(0));
+        let (_, body) = from_client.try_iter().next().unwrap();
+        for round in 0..50 {
+            assert_eq!(
+                host.deliver("client", &body),
+                Delivery::Want,
+                "round {round}"
+            );
+            let stop = Arc::new(AtomicBool::new(false));
+            let delivered = Arc::new(AtomicU32::new(0));
+            let reader = {
+                let (host, body) = (Arc::clone(&host), body.clone());
+                let (stop, delivered) = (Arc::clone(&stop), Arc::clone(&delivered));
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        host.deliver("client", &body);
+                        delivered.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            };
+            while delivered.load(Ordering::Relaxed) < 10 {
+                std::thread::yield_now();
+            }
+            host.add_receiver("client").unwrap().unwrap();
+            stop.store(true, Ordering::Relaxed);
+            reader.join().unwrap();
+            // Nothing played, so no sender ever connects.
+            for _ in 1..IDLE_CHECKS {
+                assert!(host.idle_check().is_empty());
+            }
+            assert_eq!(host.idle_check(), vec!["client".to_owned()]);
+        }
     }
 
     #[test]
