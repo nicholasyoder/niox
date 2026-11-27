@@ -10,9 +10,8 @@ design each step implements.
 
 **Current priority: keyboard/mouse at full Linux parity with NKMS, then
 retire NKMS.** Audio comes after that, then the tray icon and settings
-window. Fedora is the
-primary target OS, with `.deb` packages kept as a secondary target.
-macOS is deferred (see below).
+window. Fedora is the primary target OS, with `.deb` packages kept as a
+secondary target. macOS is deferred (see below).
 
 ## Ground rules
 
