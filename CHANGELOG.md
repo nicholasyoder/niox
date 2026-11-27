@@ -5,14 +5,16 @@ Notable changes to niox, newest first. Versions follow
 bump may break the wire protocol or config. The RPM spec's `%changelog`
 and `debian/changelog` carry a one-line summary of each release.
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-11-27
 
 Audio: clients' system audio plays on the host.
 
 - **niox-session**, a new per-user service (`systemctl --user`) in its
   own package, `niox-session`, so keyboard/mouse-only installs don't
   need libroc or libpipewire. It's enabled for every user on install and
-  starts for members of the `niox` group.
+  starts for members of the `niox` group. It needs PipeWire as the
+  user's sound server (with WirePlumber), and depends on it, so on a
+  machine running PulseAudio, installing it switches that to PipeWire.
 - **Audio from clients to the host**: on a client, a "niox → host"
   output becomes the default while the host is connected, so it works
   with no speakers attached. Its audio is encoded with Roc (with

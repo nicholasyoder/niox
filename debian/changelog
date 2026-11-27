@@ -2,7 +2,7 @@ niox (0.2.0-1) unstable; urgency=medium
 
   * Audio: clients' system audio plays on the host (niox-session package).
 
- -- Nicholas Yoder <nicholasyoder@proton.me>  Thu, 26 Nov 2026 12:00:00 -0500
+ -- Nicholas Yoder <nicholasyoder@proton.me>  Fri, 27 Nov 2026 12:00:00 -0500
 
 niox (0.1.0-1) unstable; urgency=medium
 

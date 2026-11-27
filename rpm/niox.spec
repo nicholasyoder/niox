@@ -126,7 +126,7 @@ fi
 %{_userunitdir}/niox-session.service
 
 %changelog
-* Thu Nov 26 2026 Nicholas Yoder <nicholasyoder@proton.me> - 0.2.0-1
+* Fri Nov 27 2026 Nicholas Yoder <nicholasyoder@proton.me> - 0.2.0-1
 - Audio: clients' system audio plays on the host (niox-session subpackage).
 
 * Thu Nov 26 2026 Nicholas Yoder <nicholasyoder@proton.me> - 0.1.0-1
