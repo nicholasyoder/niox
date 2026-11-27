@@ -245,7 +245,6 @@ impl<P: Copy + Eq> HostKm<P> {
         let Some(c) = self.client_mut(peer) else {
             return;
         };
-        // Down always precedes a replacement Up, but don't rely on it.
         c.up = true;
         c.held.clear();
         c.next_seq = 0;
@@ -254,6 +253,12 @@ impl<P: Copy + Eq> HostKm<P> {
             due: now + CAPS_RESEND_INITIAL,
             backoff: CAPS_RESEND_INITIAL,
         });
+        // Down always precedes a replacement Up, but don't rely on it: a
+        // new session has no device until it acknowledges, so the client
+        // leaves the focus cycle (and focus, if it had it) until then.
+        if let Some(new) = self.ring.set_available(peer, false) {
+            out.push(HostOutput::Focus(new));
+        }
         out.push(HostOutput::Send {
             peer,
             message: Message::Capabilities { generation, caps },
@@ -984,5 +989,22 @@ mod tests {
             ]
         );
         assert!(client.host_down().is_empty(), "nothing left held");
+    }
+
+    #[test]
+    fn up_without_down_leaves_the_cycle_until_acked() {
+        let mut r = Rig::new(&['a']);
+        r.connect('a');
+        r.hotkey();
+        assert_eq!(r.km.focus(), Client('a'));
+        // A replacement session, reported up with no down in between.
+        let mut out = vec![];
+        r.km.peer_up('a', r.now, &mut out);
+        assert_eq!(out.first(), Some(&Focus(Host)));
+        assert_eq!(r.km.ready_clients().count(), 0);
+        assert!(
+            sent(&r.press(A)).is_empty(),
+            "nothing reaches the new session"
+        );
     }
 }
