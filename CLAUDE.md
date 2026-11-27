@@ -32,7 +32,7 @@ outside tests.
   and no virtual NICs.
 - Refer to roadmap steps by name, never by number. Check steps off in
   place in ROADMAP.md.
-- `archive/go/` and `old/` are for reference only. Don't port them line by
+- `old/` is for reference only. Don't port them line by
   line, and don't edit them.
 - Multi-machine checks run on the libvirt VMs in `tools/testvm/`
   (see its README). Boot only what a test needs, and shut the VMs down

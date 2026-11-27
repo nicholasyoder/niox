@@ -17,12 +17,6 @@ secondary target. macOS is deferred (see below).
 
 - niox is written in Rust as a single Cargo workspace (layout in
   ARCHITECTURE.md). Crates are created when a step first needs them.
-- `archive/go/` holds an earlier Go prototype (also tagged
-  `go-prototype`) that reached single-client KM. Use it as a reference
-  for details that worked (packet framing, replay window, evdev device
-  filtering, the hotkey state machine and its tests, NKMS-derived edge
-  cases), not as something to port line by line. Several of its designs
-  are superseded; see `archive/go/README.md`.
 - Every step leaves the workspace passing `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - Verification that needs real machines ("two machines", "3-machine
@@ -45,7 +39,7 @@ are and just get checked off; nothing moves into this section.
 
 - [x] **Go prototype** — config, a Noise KK transport spike, local IPC,
   and single-client KM over the encrypted transport, built in Go.
-  Archived in `archive/go/` when niox moved to Rust, chosen for its audio and
+  Retired when niox moved to Rust (kept as the `go-prototype` tag), chosen for its audio and
   video ecosystems (PipeWire, GStreamer, real-time audio with no GC),
   the FFI Roc needs anyway, and consistency with the author's other
   projects.
@@ -214,7 +208,7 @@ are and just get checked off; nothing moves into this section.
   peer, reboot, and confirm KM works from the login screen. Repeat the
   install on Debian with the `.deb`.
 
-- [ ] ★ **Parity checkpoint: retire NKMS.** Replace NKMS with niox on
+- [x] ★ **Parity checkpoint: retire NKMS.** Replace NKMS with niox on
   every Linux machine and use it daily for a week. Anything NKMS did
   that niox doesn't becomes a bug against the steps above before moving
   on. Delete `archive/go/` once this passes.

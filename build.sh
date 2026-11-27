@@ -10,7 +10,7 @@
 #                       binaries built here would need Fedora's newer glibc)
 #
 # Both start from one source tarball of the working tree (tracked and
-# untracked-but-not-ignored files, minus archive/). The RPM also gets the
+# untracked-but-not-ignored files). The RPM also gets the
 # crates.io dependencies vendored, so rpmbuild and mock build offline.
 #
 # The version comes from the workspace Cargo.toml; debian/changelog's newest
@@ -34,7 +34,7 @@ rm -rf "$work"
 mkdir -p "$out" "$work"
 
 tarball=$work/niox-$version.tar.gz
-git ls-files -z --cached --others --exclude-standard -- . ':!archive' |
+git ls-files -z --cached --others --exclude-standard -- . |
     xargs -0 sh -c 'for f; do [ -e "$f" ] || [ -L "$f" ] && printf "%s\0" "$f"; done' sh |
     tar --null --files-from=- --transform "s,^,niox-$version/,S" -czf "$tarball"
 

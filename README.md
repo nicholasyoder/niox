@@ -16,7 +16,7 @@ with keyboard/mouse. The goal is full Linux parity with NKMS
 (multi-client, hot-plug, login-screen support, RPM/deb packaging) so NKMS
 can be retired. Audio and a tray icon with a settings window come after
 that. An earlier Go prototype that reached single-client keyboard/mouse
-is archived in `archive/go/` for reference.
+survives as the `go-prototype` git tag.
 
 ## Layout
 
@@ -31,7 +31,6 @@ A Cargo workspace; crates are added as the roadmap reaches them.
 - `crates/niox-ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
 - `crates/niox-settings` -- egui settings window
 - `crates/niox-config` -- shared TOML config
-- `archive/go/` -- archived Go prototype, reference only
 
 ## Development
 

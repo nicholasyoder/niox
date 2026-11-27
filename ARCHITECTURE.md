@@ -497,7 +497,7 @@ user session.
 ## Repo structure
 
 Single Rust Cargo workspace. niox was first prototyped in Go, through
-single-client KM; that code is archived in `archive/go/` as a reference.
+single-client KM; that code survives as the `go-prototype` git tag.
 Rust was chosen mainly for the audio and video ecosystems (PipeWire,
 GStreamer, real-time audio with no GC).
 
@@ -515,7 +515,6 @@ niox/
     niox-ipc/          # UDS control channel (nioxd <-> niox-session/nioxctl)
     niox-settings/     # bin: egui settings window over the nioxd socket
     niox-config/       # shared TOML config loading
-  archive/go/          # archived Go prototype, reference only
   old/                 # NKMS and audio-switcher, kept for reference
 ```
 
