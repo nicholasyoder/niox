@@ -348,6 +348,19 @@ fn rejects_bad_peer_name_and_address() {
         "peer[0].name",
         "empty",
     );
+    let long = "x".repeat(256);
+    assert_invalid(
+        &config_text(&peer(&long, "10.0.0.2", &pubkey(), "client")),
+        &format!("peer[0] ({long:?}).name"),
+        "longer than 255 bytes",
+    );
+    parse(&config_text(&peer(
+        &"x".repeat(255),
+        "10.0.0.2",
+        &pubkey(),
+        "client",
+    )))
+    .unwrap();
     assert_invalid(
         &config_text(&peer("desk", "bad_host", &pubkey(), "client")),
         "peer[0] (\"desk\").address",

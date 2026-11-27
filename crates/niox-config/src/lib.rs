@@ -42,6 +42,10 @@ pub const DEFAULT_AUDIO_LATENCY: Duration = Duration::from_millis(200);
 /// The audio latency targets the config accepts, in milliseconds.
 pub const AUDIO_LATENCY_MS: std::ops::RangeInclusive<u64> = 10..=2000;
 
+/// Longest peer name, in bytes: the audio channel addresses a peer by
+/// its name, after a one-byte length (see `niox_ipc::audio`).
+pub const MAX_PEER_NAME: usize = 255;
+
 /// Highest valid evdev key code (`KEY_MAX` in linux/input-event-codes.h).
 pub const EVDEV_KEY_MAX: u16 = 0x2ff;
 
@@ -318,6 +322,12 @@ fn validate(raw: raw::Config) -> Result<Config, ConfigError> {
             return Err(ConfigError::invalid(
                 field("name"),
                 "must not contain control characters",
+            ));
+        }
+        if name.len() > MAX_PEER_NAME {
+            return Err(ConfigError::invalid(
+                field("name"),
+                format!("is longer than {MAX_PEER_NAME} bytes"),
             ));
         }
         if let Some(j) = by_name.insert(name.clone(), i) {

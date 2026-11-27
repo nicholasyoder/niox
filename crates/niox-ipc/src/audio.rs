@@ -13,8 +13,8 @@
 //! | 1 + n  | the rest | `Subsystem::Audio` body (≤ [`MAX_BODY`]) |
 //!
 //! From niox-session, the peer is where nioxd sends the body; from
-//! nioxd, it's who sent it. A peer whose name is longer than 255 bytes
-//! can't be addressed.
+//! nioxd, it's who sent it. The config limits names to 255 bytes
+//! (`niox_config::MAX_PEER_NAME`), so every peer can be addressed.
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
