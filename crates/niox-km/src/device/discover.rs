@@ -11,10 +11,7 @@ use tracing::{debug, warn};
 
 use super::{DeviceError, VIRTUAL_DEVICE_NAME};
 use crate::caps::{AbsInfo, Capabilities};
-use crate::event::{EV_KEY, EV_MSC, EV_REL};
-
-/// `EV_SW`: switches.
-const EV_SW: u16 = 0x05;
+use crate::event::{EV_KEY, EV_MSC, EV_REL, EV_SW};
 
 /// An opened (not yet grabbed) keyboard or mouse.
 #[derive(Debug)]

@@ -10,6 +10,8 @@ pub const EV_REL: u16 = 0x02;
 pub const EV_ABS: u16 = 0x03;
 /// `EV_MSC`: miscellaneous (e.g. `MSC_SCAN` alongside key events).
 pub const EV_MSC: u16 = 0x04;
+/// `EV_SW`: switches (e.g. a laptop lid or tablet mode).
+pub const EV_SW: u16 = 0x05;
 
 /// `SYN_REPORT`: the end of one frame of events.
 pub const SYN_REPORT: u16 = 0;

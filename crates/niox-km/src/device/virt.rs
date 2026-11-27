@@ -8,9 +8,7 @@ use evdev::{
 
 use super::{DeviceError, VIRTUAL_DEVICE_NAME};
 use crate::caps::Capabilities;
-use crate::event::{EV_KEY, EV_MSC, EV_REL, InputEvent};
-
-const EV_SW: u16 = 0x05;
+use crate::event::{EV_KEY, EV_MSC, EV_REL, EV_SW, InputEvent};
 
 /// A uinput device that plays frames. The kernel destroys it when this is
 /// dropped (its file descriptor closes), releasing anything held on it.
