@@ -21,8 +21,8 @@ security, then the control plane, audio, and the rest.
   session's heading: what's wrong, where, a failure scenario, a severity,
   and a suggested fix. Don't fix these during the review.
 - Tick the session off below, with the commits it made.
-- Last, triage FINDINGS.md into ROADMAP.md: bugs go under *Bugfixes*,
-  bigger items become steps.
+- Last, triage FINDINGS.md into ROADMAP.md, as items in its *Review
+  follow-ups* section.
 
 Severity: **high** means wrong behavior users hit, or a security hole.
 **medium** means a real bug in a rare case, or a measurable latency cost.
@@ -84,7 +84,6 @@ Severity: **high** means wrong behavior users hit, or a security hole.
   - Then triage FINDINGS.md into ROADMAP.md.
   Commits: `acb2d0f`, `8a379d0`, `cd14698`.
 
-The review is done. Every finding is now in ROADMAP.md: the bugs under
-*Bugfixes*, and the larger items as the step "nioxd: reload tests"
-(ahead of the config-edits step, which runs the reload on every edit)
-and the *Review follow-ups* section.
+The review is done. Every finding is now an item in ROADMAP.md's
+*Review follow-ups* section, which comes before the tray and settings
+window.

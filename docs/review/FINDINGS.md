@@ -2,8 +2,8 @@
 
 Findings too big to fix during the review (see [PLAN.md](PLAN.md)),
 grouped by session, most severe first. The review is done and every
-finding has moved to [ROADMAP.md](../../ROADMAP.md), as a *Bugfixes*
-item or a step; each heading below says where. This file keeps what
+finding has moved to the *Review follow-ups* section of
+[ROADMAP.md](../../ROADMAP.md); each heading below says which item. This file keeps what
 each session fixed and what it checked and found sound.
 
 ## KM
@@ -21,34 +21,36 @@ Fixed during the review (on `develop`):
 
 ### KM-1: one unioned virtual device can be misclassified (high, unverified)
 
-Moved to ROADMAP.md: *Bugfixes* "Verify the unioned virtual device on a
-touchpad host", then the step "KM: one virtual device per device class".
+Moved to ROADMAP.md, *Review follow-ups*: "Verify the unioned virtual
+device on a touchpad host", then "KM: one virtual device per device
+class".
 
 ### KM-2: hot-plug stalls all input while the passthrough device is recreated (medium)
 
-Moved to ROADMAP.md: *Bugfixes* "Hot-plug stalls all input while the
-passthrough device is recreated".
+Moved to ROADMAP.md, *Review follow-ups*: "Hot-plug stalls all input
+while the passthrough device is recreated".
 
 ### KM-3: nioxd's scheduling isn't tuned for input latency (medium, measure first)
 
-Moved to ROADMAP.md: *Bugfixes* "Measure KM latency under CPU load".
+Moved to ROADMAP.md, *Review follow-ups*: "Measure KM latency under CPU
+load".
 
 ### KM-4: media keys on separate evdev nodes aren't captured (medium, parity gap)
 
-Moved to ROADMAP.md: *Bugfixes* "Media keys on separate evdev nodes
-aren't captured".
+Moved to ROADMAP.md, *Review follow-ups*: "Media keys on separate evdev
+nodes aren't captured".
 
 ### KM-5: per-frame allocations on the capture → send path (low)
 
-Moved to ROADMAP.md: the step "Review cleanups".
+Moved to ROADMAP.md, *Review follow-ups*: "Review cleanups".
 
 ### KM-6: the timer thread wakes 10 times a second forever (low)
 
-Moved to ROADMAP.md: the step "Review cleanups".
+Moved to ROADMAP.md, *Review follow-ups*: "Review cleanups".
 
 ### KM-7: status is built in two places (low)
 
-Moved to ROADMAP.md: the step "Review cleanups".
+Moved to ROADMAP.md, *Review follow-ups*: "Review cleanups".
 
 ## Transport
 
@@ -71,20 +73,21 @@ datagram, no allocation).
 
 ### TR-1: a forged handshake init costs two DHs per configured peer (medium)
 
-Moved to ROADMAP.md: the step "Transport: init MAC and rate limit".
+Moved to ROADMAP.md, *Review follow-ups*: "Transport: init MAC and rate
+limit".
 
 ### TR-2: sessions never rekey (low)
 
-Moved to ROADMAP.md: the step "Transport: rekeying".
+Moved to ROADMAP.md, *Review follow-ups*: "Transport: rekeying".
 
 ### TR-3: answering an init gives up this side's own pending handshake (low)
 
-Moved to ROADMAP.md: the step "Transport: rekeying".
+Moved to ROADMAP.md, *Review follow-ups*: "Transport: rekeying".
 
 ### TR-4: replies follow any authenticated datagram, even an old one (low)
 
-Moved to ROADMAP.md: *Bugfixes* "Transport: replies follow an old
-datagram's source".
+Moved to ROADMAP.md, *Review follow-ups*: "Transport: replies follow an
+old datagram's source".
 
 ## Control plane
 
@@ -118,13 +121,13 @@ KM-7 for the status built twice.
 
 ### CP-1: a config without `[identity]` silently re-keys a running nioxd (medium)
 
-Moved to ROADMAP.md: *Bugfixes* "Reload without `[identity]` re-keys a
-running nioxd".
+Moved to ROADMAP.md, *Review follow-ups*: "Reload without `[identity]`
+re-keys a running nioxd".
 
 ### CP-2: one user can take every control connection (low)
 
-Moved to ROADMAP.md: *Bugfixes* "One user can take every control
-connection".
+Moved to ROADMAP.md, *Review follow-ups*: "One user can take every
+control connection".
 
 ## Audio
 
@@ -160,13 +163,13 @@ removed. The plan is derived from the view in one place
 
 ### AU-1: a PipeWire restart loses the default output to put back (low)
 
-Moved to ROADMAP.md: *Bugfixes* "Audio: a PipeWire restart loses the
-default output to put back".
+Moved to ROADMAP.md, *Review follow-ups*: "Audio: a PipeWire restart
+loses the default output to put back".
 
 ### AU-2: a host with no output device remakes its player every few seconds (low, unverified)
 
-Moved to ROADMAP.md: *Bugfixes* "Audio: a host with no output remakes
-its player every few seconds".
+Moved to ROADMAP.md, *Review follow-ups*: "Audio: a host with no output
+remakes its player every few seconds".
 
 ## Cross-cutting
 
@@ -194,12 +197,13 @@ here, so advisories weren't checked.
 
 ### XC-1: nioxd has no tests (low)
 
-Moved to ROADMAP.md: the step "nioxd: reload tests".
+Moved to ROADMAP.md, *Review follow-ups*: "nioxd: reload tests".
 
 ### XC-2: niox-session's user unit isn't sandboxed (low)
 
-Moved to ROADMAP.md: *Bugfixes* "Sandbox niox-session's user unit".
+Moved to ROADMAP.md, *Review follow-ups*: "Sandbox niox-session's user
+unit".
 
 ### XC-3: duplicate crypto and build dependencies (low)
 
-Moved to ROADMAP.md: the step "Review cleanups".
+Moved to ROADMAP.md, *Review follow-ups*: "Review cleanups".
