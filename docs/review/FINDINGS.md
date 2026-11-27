@@ -309,3 +309,74 @@ to move focus and reload anyway, so this is only hardening.
 - **Fix:** also cap connections per uid (from `SO_PEERCRED`, which
   `spawn_connection` already reads), say 16, so one user can't starve
   another. Exempt root.
+
+## Audio
+
+Fixed during the review (on `develop`):
+
+- A plan change that remakes a client's receiver (a new latency) could
+  leave that client silent until the next plan change: a body arriving
+  between `Streams::set_plan` and the queued `Command::Plan` asked for a
+  receiver, and `add_player` ignored the ask because the old player was
+  still there. (`3fea06d`)
+- The sink took any 100ms between process calls for a pause in the
+  audio, so with `clock.max-quantum` above 4800 frames, every quantum
+  started a new Roc stream. (`f036711`)
+
+Checked and found sound: the `Send`/`Sync` impls (libroc's headers
+document the context, encoder, and decoder as safe to use concurrently),
+drop order (each encoder and decoder closes before its `Context` clone
+drops), buffer sizes on both sides of every call (`pop_into` checks
+against the context's maximum, so libroc's single error for "empty" and
+"too small" can only mean empty, and it never trusts the returned
+length past the buffer), and the log handler. On the PipeWire thread:
+stream callbacks never touch the `RefCell` state, so nothing re-borrows
+it. The process callbacks reuse their buffers, and their only locks are
+short ones in `Streams`, taken in one order throughout (plan, then
+receivers, then wanted; senders, then output delays). The thread's
+shutdown handshake can't miss a stop: `stop` and the command channel are
+set and read in opposite orders. Reconnect backoff is fine on both
+sides. A short pause in the audio (150ms to 5s, the host still pulling
+silence) comes back within 40ms. A decoder only counts as connected
+once frames are popped from it, so a player that never runs is
+removed. The plan is derived from the view in one place
+(`audio::plan`), and the engine replans only when it changes.
+
+### AU-1: a PipeWire restart loses the default output to put back (low)
+
+`crates/niox-audio/src/engine.rs`, `DefaultSink` (made fresh in each
+`session`).
+
+What the niox sink replaced is kept in the `DefaultSink`, which lives
+only as long as the PipeWire connection. When PipeWire restarts while
+the sink is up, WirePlumber restores `default.configured.audio.sink`
+from its state file, and it still names `niox_sink`. On reconnect,
+`claim` takes that for an old crash and records nothing to put back.
+When the sink later goes away cleanly (the host disconnects, the
+channel moves to another user, niox-session stops), the key is cleared
+instead of restored, and WirePlumber picks the highest-priority output,
+which may not be the one the user chose (HDMI over headphones, say).
+
+- **Fix:** keep what was replaced in `run`, across sessions. When
+  `claim` finds the key naming the niox sink, use the carried value. If
+  the key names anything else, use that instead, since it's the user's
+  newer choice. At the end of a session, carry `replaced` if the sink
+  claimed the default, and otherwise whatever was carried in.
+
+### AU-2: a host with no output device remakes its player every few seconds (low)
+
+`crates/niox-audio/src/engine.rs` (`add_player`, the idle tick) and
+`streams.rs` (`idle_check`).
+
+With nowhere to play (no sink at all), a player's stream never links,
+so PipeWire never runs it and its decoder never connects. The idle
+check removes it after 5 seconds, the client's next body asks for a new
+one, and so on. Each round logs two `info` lines ("a client's audio
+arrived; playing it", "stopped playing a quiet client's audio") and
+creates a stream and a decoder, for as long as the client sends.
+
+- **Fix:** have the idle check tell a player that never reached
+  `Streaming` apart from one whose sender went quiet. Log the first
+  case once, at `warn`, then back off before making that client's
+  player again (say 30 seconds), or wait for a sink to appear in the
+  registry.

@@ -62,7 +62,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
     non-blocking forwarding.
   - Status and enum mapping repeated between crates.
   Commits: `84ed881`, `f821fd2`, `1632ba8`.
-- [ ] **Audio** (about 4.5k lines): `niox-roc` (all of the workspace's
+- [x] **Audio** (about 4.5k lines): `niox-roc` (all of the workspace's
   `unsafe`), `niox-audio` (engine, streams, lib), `niox-session` (main,
   view, audio).
   Focus:
@@ -72,6 +72,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
   - Reconnect and backoff logic.
   - Default-sink restore.
   - State duplicated between the view and the engine.
+  Commits: `3fea06d`, `f036711`.
 - [ ] **Cross-cutting** (small): `build.sh`, `rpm/`, `debian/`,
   `dist/*.service`, `tools/`, and the examples.
   Focus:
