@@ -602,7 +602,8 @@ once it has a design.
 - **Fedora/RPM is the primary target**; `.deb` is kept building as a
   secondary target. `./build.sh` builds both into `target/dist/` from one
   source tarball of the tree; the version comes from the workspace
-  `Cargo.toml` (`debian/changelog` must match).
+  `Cargo.toml` (the newest `debian/changelog` and spec `%changelog`
+  entries must match).
   - RPM (`rpm/niox.spec`): the crates.io dependencies are vendored into a
     second source tarball, so rpmbuild and mock build offline with Fedora's
     cargo.

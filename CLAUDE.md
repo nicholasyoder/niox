@@ -43,7 +43,8 @@ outside tests.
   (see its README). Boot only what a test needs, and shut the VMs down
   afterward. `tools/dev/deploy.sh` pushes dev builds to machines over SSH.
 - Packaging: `./build.sh [rpm|deb]` writes to `target/dist/`. The version
-  in `Cargo.toml` and the newest `debian/changelog` entry must match.
+  in `Cargo.toml` and the newest `debian/changelog` and `rpm/niox.spec`
+  `%changelog` entries must match.
 
 ## Git
 

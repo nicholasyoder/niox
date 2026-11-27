@@ -13,8 +13,8 @@
 # untracked-but-not-ignored files). The RPM also gets the
 # crates.io dependencies vendored, so rpmbuild and mock build offline.
 #
-# The version comes from the workspace Cargo.toml; debian/changelog's newest
-# entry must match it.
+# The version comes from the workspace Cargo.toml; the newest entries in
+# debian/changelog and rpm/niox.spec's %changelog must match it.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -23,8 +23,10 @@ what=${1:-all}
 
 version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
 deb_version=$(sed -n '1s/^niox (\([^)-]*\)-[^)]*).*/\1/p' debian/changelog)
-if [[ -z $version || $version != "$deb_version" ]]; then
-    echo "version mismatch: Cargo.toml has '$version', debian/changelog has '$deb_version'" >&2
+rpm_version=$(sed -n '/^%changelog/{n;s/.* - \([^-]*\)-[^-]*$/\1/p;q}' rpm/niox.spec)
+if [[ -z $version || $version != "$deb_version" || $version != "$rpm_version" ]]; then
+    echo "version mismatch: Cargo.toml has '$version', debian/changelog has '$deb_version'," \
+        "rpm/niox.spec's %changelog has '$rpm_version'" >&2
     exit 1
 fi
 
