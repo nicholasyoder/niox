@@ -3,8 +3,8 @@
 Findings too big to fix during the review (see [PLAN.md](PLAN.md)),
 grouped by session, most severe first. The review is done and every
 finding has moved to the *Review follow-ups* section of
-[ROADMAP.md](../../ROADMAP.md); each heading below says which item. This file keeps what
-each session fixed and what it checked and found sound.
+[ROADMAP.md](../../ROADMAP.md); each heading below says which item. This
+file keeps what each session fixed and what it checked and found sound.
 
 ## KM
 

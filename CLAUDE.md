@@ -36,7 +36,7 @@ outside tests.
 - Peers are configured by hand. There's no discovery, no external daemons,
   and no virtual NICs.
 - Refer to roadmap steps by name, never by number. Check steps off in
-  place in ROADMAP.md.
+  place in ROADMAP.md, condensed to one line.
 - [NKMS](https://github.com/nicholasyoder/nkms) is the reference for KM
   behavior. Don't port it line by line.
 - Multi-machine checks run on the libvirt VMs in `tools/testvm/`
