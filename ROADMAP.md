@@ -296,6 +296,20 @@ There's no network-facing control. A headless machine, or one at the
 login screen, is configured with `nioxctl` (over SSH if need be) or by
 editing the config file.
 
+- [ ] **nioxd: reload tests** — nioxd has no tests, and the in-place
+  reload (`Running::apply` in `nioxd/src/km/mod.rs`) is the riskiest of
+  it: peers matched by public key, new ids routed before the transport
+  adds them, the host side starting and stopping, a removed focused
+  client released first. The config-edits step below runs it on every
+  edit, so cover it first. Split the reload diff out of `apply` into a
+  pure function (old config and ids, new config → peers kept, renamed,
+  re-roled, readdressed, added, removed, and whether the host side
+  starts or stops) and unit-test its cases. Add a loopback test with
+  two endpoints on `127.0.0.1` for a reload that renames and readdresses
+  a connected peer. (Review finding XC-1.)
+  *Verification*: the new tests cover each kind of peer change, and a
+  rename or readdress keeps the peer's session up.
+
 - [ ] **Control API: config edits** — nioxd edits its own config on
   request, so no front end ever writes the file:
   - Requests on the control socket to read the editable config (no
@@ -368,6 +382,87 @@ editing the config file.
   refused. Installs from both the RPM and the `.deb` and launches from
   the desktop menu.
 
+## Review follow-ups
+
+Larger items from the whole-project code review
+([docs/review/](docs/review/PLAN.md)); its smaller bugs are under
+*Bugfixes*.
+
+- [ ] **Transport: init MAC and rate limit** — a handshake init names no
+  peer, so the driver trial-decrypts it against every peer, two DHs
+  each, before the AEAD check fails. About 120µs per peer on a desktop
+  (more on a Raspberry Pi): with three peers, ~2,800 garbage 64-byte
+  inits a second from any LAN host fill the driver thread, keepalives
+  stop, and every peer goes down. Add a MAC to the init, checked before
+  any DH, as WireGuard's `mac1` is: keyed per peer pair from the
+  static-static DH (`HASH("niox mac" || DH(s_local, s_peer))`, computed
+  when a peer is added), so only the two peers can make it and it names
+  the peer. The trial loop becomes N cheap MACs and at most one
+  `respond`. Also cap inits processed per second with a global token
+  bucket. The init grows by 16 bytes, so bump `PROTOCOL_VERSION` and
+  the prologue. (TR-1.)
+  *Verification*: a flood of forged inits at line rate leaves every
+  peer up and KM responsive on the VMs, and a unit test shows a
+  wrong-MAC init costs no DH.
+
+- [ ] **KM: one virtual device per device class** — only if the
+  *Bugfixes* item "Verify the unioned virtual device on a touchpad
+  host" confirms the problem; otherwise check this off as not needed.
+  The host's passthrough device and each client's virtual device union
+  every captured device's capabilities, so a touchpad's `ABS_MT_*`,
+  `BTN_TOOL_FINGER`, and `INPUT_PROP_BUTTONPAD` would make libinput
+  treat the keyboard and mouse sharing it as a touchpad, and absolute
+  ranges widen across devices. Make one virtual device per class
+  (keyboard; relative pointer; each absolute device), unioning only
+  within a class, and give the caps message and each frame a
+  device-class byte. That's a KM wire change, so bump its protocol
+  version. (KM-1.)
+  *Verification*: on a host with a real or uinput-faked touchpad,
+  typing, mouse motion, and the touchpad all work on the host and on a
+  client, and `libinput list-devices` shows one device per class.
+
+- [ ] **Transport: rekeying** — a session lives as long as the link,
+  possibly weeks, so one session key read from memory decrypts
+  everything recorded since it began (keystrokes included). WireGuard
+  rekeys every 2 minutes. The initiator of the current session
+  re-handshakes after a set age while up; the new session replaces the
+  old silently, the old one keeps receiving until the first datagram
+  arrives on the new one (or a short grace period), and `Down`/`Up` are
+  reported only for a handshake started while down or from a restarted
+  peer, so KM doesn't treat a rekey as a restart. (TR-2.) Fold in
+  TR-3 while in that code: answering an init gives up this side's own
+  pending handshake and waits out `dead_after` (3.5s), so a replayed
+  init while down (any recorded one passes after this side restarts)
+  delays reconnecting. While down, keep `pending` and take whichever
+  handshake completes first, or at least push `retry_at` out by a short
+  confirm timeout.
+  *Verification*: with a short rekey age, the VMs rekey repeatedly with
+  no KM release or caps resend and no lost frames, and a replayed init
+  while down doesn't delay reconnecting.
+
+- [ ] **Review cleanups** — small items that aren't bugs:
+  - KM's timer thread wakes every 100ms forever, even with no
+    capabilities pending. Use a `Condvar` (or a second eventfd next to
+    the `Stop` pipe) that `State::step` notifies when `next_deadline`
+    moves earlier, and sleep until the deadline. (KM-6.)
+  - `Status` is built field by field in `nioxd/src/main.rs`
+    (`empty_status`) and `km/mod.rs` (`Running::status`). Make one
+    constructor taking the config and an optional live view, and key
+    published peers by index or public key, not name. (KM-7.)
+  - nioxd links two X25519 implementations and two `getrandom`s
+    (niox-config's `x25519-dalek` 3 and `getrandom` 0.4, also used by
+    niox-transport, against `snow`'s `curve25519-dalek` 4 and
+    `getrandom` 0.3), and niox-roc's `bindgen` 0.73 duplicates
+    pipewire-rs's 0.72. Align them with `snow` and pipewire-rs until
+    those move on, and run `cargo audit` before each release. (XC-3.)
+  - Only if profiling ever shows it: the capture → send path allocates
+    three Vecs per frame (`current`, the `HostOutput`, `chunk.to_vec()`),
+    a few hundred ns against a ~50µs round trip. (KM-5.)
+
+  *Verification*: `cargo tree -d` no longer lists `curve25519-dalek`,
+  `getrandom`, or `bindgen`; an idle nioxd host shows no periodic
+  wakeups (`perf trace` or `strace -f`).
+
 ## Explicitly deferred
 
 Tracked as future work, not scheduled into the items above:
@@ -435,3 +530,114 @@ everything else. Pick these up between steps.
   client's latency settled at 280ms, up from 179ms (Roc's own queue
   settled lower). Checked on real machines with 0.2.1.
 
+- [ ] **Reload without `[identity]` re-keys a running nioxd** —
+  `niox_config::load` treats a file without `[identity]` as a first run
+  on reload too (`Daemon::reload` in `nioxd/src/main.rs`): it writes a
+  new keypair into the file and KM restarts under it. Every peer still
+  lists the old key, so all of them refuse this machine, the old private
+  key is gone, and the reply is just "identity changed". The usual way
+  there: replacing `niox.toml` wholesale and running `systemctl reload
+  nioxd`. Generate an identity only at startup; on reload, use `parse`
+  and refuse a config without `[identity]`, keeping the running one.
+  The same write also replaces a symlinked `niox.toml` with a regular
+  file, and a `SIGHUP` and a `nioxctl reload` together race on the temp
+  name `.niox.toml.tmp`: serialize reloads (`load` runs before the KM
+  lock), or make the temp name unique. (CP-1, medium.)
+  *Verification*: a test reloads a config without `[identity]` and gets
+  an error, with the running identity and the file unchanged.
+
+- [ ] **Hot-plug stalls all input while the passthrough device is
+  recreated** — `Devices::add` → `State::add_capabilities`
+  (`nioxd/src/km/host.rs`) runs `VirtualDevice::create` (`UI_DEV_CREATE`,
+  then the kernel and udev setting the device up) with the
+  `host::State` lock held, and every capture thread waits on it. Build
+  the new device before taking the lock and swap it in under it.
+  (KM-2, medium.)
+  *Verification*: on the host VM, input from the existing keyboard keeps
+  flowing while a device that adds capabilities is plugged in.
+
+- [ ] **Media keys on separate evdev nodes aren't captured** — NKMS's
+  heuristic (`is_keyboard_or_mouse` in `niox-km/src/device/discover.rs`:
+  `BTN_LEFT`, or `KEY_A` and `KEY_Z`) skips the "Consumer Control" and
+  "System Control" nodes most USB keyboards expose, so volume, media,
+  and power keys keep acting on the host while a client has focus. Also
+  capture a node that shares a physical device (same `phys` prefix or
+  sysfs parent) with a captured keyboard and has consumer-range keys
+  (`KEY_VOLUMEUP`, `KEY_PLAYPAUSE`, …), leaving standalone nodes such as
+  the power button and lid switch alone. (KM-4, medium.)
+  *Verification*: on a real USB keyboard, volume keys act on the client
+  that has focus; the power button still acts on the host.
+
+- [ ] **Verify the unioned virtual device on a touchpad host** — a host
+  with a touchpad may make libinput treat its single unioned virtual
+  device as a touchpad (see the review follow-up "KM: one virtual device
+  per device class"). The VMs' QEMU tablet is an absolute mouse, so they
+  don't show it. Check a host with a real touchpad, or fake one with
+  uinput (`ABS_MT_*`, `BTN_TOOL_FINGER`, `INPUT_PROP_BUTTONPAD`) on a
+  VM: `libinput list-devices` and `udevadm info` for `niox virtual
+  input`, and whether typing and mouse motion still work on the host
+  and a client. (KM-1, high if confirmed.)
+
+- [ ] **Measure KM latency under CPU load** — the capture and driver
+  threads run at default priority, and `RestrictRealtime=yes` rules out
+  realtime scheduling, so a busy host or client may add milliseconds
+  per event. Measure event-to-uinput latency under `stress-ng --cpu
+  $(nproc)` with the unit as it is, with `Nice=-10`, and with
+  `CPUSchedulingPolicy=fifo` (plus `CPUSchedulingPriority=` and
+  `RestrictRealtime=no`). Change `nioxd.service` only if the difference
+  is real. (KM-3, medium if it is.)
+
+- [ ] **Audio: a PipeWire restart loses the default output to put
+  back** — what the niox sink replaced lives in a `DefaultSink` made
+  fresh per PipeWire connection (`niox-audio/src/engine.rs`). After a
+  PipeWire restart, WirePlumber restores `default.configured.audio.sink`
+  as `niox_sink`, `claim` takes it for an old crash and records nothing,
+  and when the sink later goes away the key is cleared, not restored.
+  Keep what was replaced in `run`, across sessions: when `claim` finds
+  the key naming the niox sink, use the carried value; if it names
+  anything else, that's the user's newer choice. (AU-1, low.)
+  *Verification*: on a client VM, choose an output, restart PipeWire
+  while the host is connected, disconnect the host, and the chosen
+  output is the default again.
+
+- [ ] **Audio: a host with no output remakes its player every few
+  seconds** (unverified) — with no sink at all, a player's stream never
+  links, its decoder never connects, the idle check removes it after
+  5s, and the client's next body makes a new one, logging two `info`
+  lines each round. Have the idle check tell a player that never
+  reached `Streaming` from one whose sender went quiet; log the first
+  once at `warn` and back off (say 30s) or wait for a sink to appear.
+  (AU-2, low.)
+  *Verification*: on a host VM with its sound card removed, a sending
+  client logs one warning, not a stream of info lines.
+
+- [ ] **Transport: replies follow an old datagram's source** — the route
+  moves to the source of any authenticated datagram, even one reordered
+  behind newer ones, so an on-path attacker can resend a captured
+  datagram from elsewhere and redirect replies until the next genuine
+  one (at most a keepalive, 1s). Have `Session::open` report whether
+  the counter is the newest yet seen, and roam only on those (`on_data`
+  in `niox-transport/src/endpoint/driver.rs`). (TR-4, low.)
+  *Verification*: a unit or endpoint test where a stale datagram from a
+  new address doesn't move the route.
+
+- [ ] **One user can take every control connection** — the control
+  socket's 64-connection limit (`MAX_CONNECTIONS` in
+  `niox-ipc/src/server.rs`) is global and connections have no idle
+  timeout, so one `niox` group member can hold them all, locking out
+  `nioxctl` and a restarting niox-session. Also cap connections per uid
+  (from the `SO_PEERCRED` already read), say 16, exempting root.
+  (CP-2, low.)
+  *Verification*: an IPC test where one uid's 17th connection is
+  refused while another uid still connects.
+
+- [ ] **Sandbox niox-session's user unit** — it feeds peers' audio to
+  libroc's C decoder with no hardening at all. Add what a user manager
+  supports without breaking PipeWire: `NoNewPrivileges=yes`,
+  `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
+  `SystemCallArchitectures=native`, `RestrictAddressFamilies=AF_UNIX`,
+  and, if PipeWire's modules allow, `MemoryDenyWriteExecute=yes` and
+  `RestrictNamespaces=yes`. Not `RestrictRealtime=`: PipeWire clients
+  may take realtime scheduling. (XC-2, low.)
+  *Verification*: audio both ways on the VMs with the new unit, and
+  `systemd-analyze --user security niox-session` improves.

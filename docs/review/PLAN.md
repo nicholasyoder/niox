@@ -73,7 +73,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
   - Default-sink restore.
   - State duplicated between the view and the engine.
   Commits: `3fea06d`, `f036711`.
-- [ ] **Cross-cutting** (small): `build.sh`, `rpm/`, `debian/`,
+- [x] **Cross-cutting** (small): `build.sh`, `rpm/`, `debian/`,
   `dist/*.service`, `tools/`, and the examples.
   Focus:
   - Unit hardening against what each binary needs.
@@ -82,3 +82,9 @@ Severity: **high** means wrong behavior users hit, or a security hole.
     (`cargo audit`, if available).
   - Test gaps found in earlier sessions.
   - Then triage FINDINGS.md into ROADMAP.md.
+  Commits: `acb2d0f`, `8a379d0`, `cd14698`.
+
+The review is done. Every finding is now in ROADMAP.md: the bugs under
+*Bugfixes*, and the larger items as the step "nioxd: reload tests"
+(ahead of the config-edits step, which runs the reload on every edit)
+and the *Review follow-ups* section.
