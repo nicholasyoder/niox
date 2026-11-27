@@ -363,7 +363,7 @@ which may not be the one the user chose (HDMI over headphones, say).
   newer choice. At the end of a session, carry `replaced` if the sink
   claimed the default, and otherwise whatever was carried in.
 
-### AU-2: a host with no output device remakes its player every few seconds (low)
+### AU-2: a host with no output device remakes its player every few seconds (low, unverified)
 
 `crates/niox-audio/src/engine.rs` (`add_player`, the idle tick) and
 `streams.rs` (`idle_check`).
