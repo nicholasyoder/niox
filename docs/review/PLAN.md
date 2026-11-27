@@ -50,7 +50,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
     driver-thread blocking.
   - Liveness timer edges, and peer add, remove, and update races.
   Commits: `84751fa`, `54a3760`.
-- [ ] **Control plane** (about 4.5k lines): `niox-ipc` (protocol, server,
+- [x] **Control plane** (about 4.5k lines): `niox-ipc` (protocol, server,
   publisher, client, arbiter, fds, seat, audio), `niox-config` (load,
   write, validate, raw, address, key), `nioxctl`, `nioxd/src/audio.rs`.
   Focus:
@@ -61,6 +61,7 @@ Severity: **high** means wrong behavior users hit, or a security hole.
   - The audio channel arbiter (seat0 polling) and the relay's
     non-blocking forwarding.
   - Status and enum mapping repeated between crates.
+  Commits: `84ed881`, `f821fd2`, `1632ba8`.
 - [ ] **Audio** (about 4.5k lines): `niox-roc` (all of the workspace's
   `unsafe`), `niox-audio` (engine, streams, lib), `niox-session` (main,
   view, audio).

@@ -236,3 +236,76 @@ attacker, who could drop the traffic anyway, so this is only hardening.
 
 - **Fix:** have `Session::open` report whether the counter was the
   newest yet seen, and roam only on those.
+
+## Control plane
+
+Fixed during the review (on `develop`):
+
+- The config accepted peer names longer than the 255 bytes the audio
+  channel can address. Such a peer could never get audio, and nioxd
+  logged a failure for every audio packet it received from it.
+  (`84ed881`)
+- Only the all-zeros peer public key was refused, not the other
+  low-order points, which make the static-key DHs zero and so let
+  anyone complete a handshake as that peer. (`f821fd2`)
+- A comment in `server::serve` credited the wrong thing with ending a
+  writer stuck on a client that stopped reading. (`1632ba8`)
+
+Checked and found sound: line-length limits on both ends (`read_line`
+caps each line at `MAX_LINE` without buffering more), malformed JSON
+(an error reply, and the connection survives), subscribers and audio
+waiters that stop reading (dropped with `try_send`, never blocking the
+publisher or the arbiter), fds a client sends (closed by the kernel,
+since the server reads without a control buffer), the order fds and
+lines arrive in on the client, the bind, chmod, and rename sequence
+(the socket is only reachable under its final name with its final
+mode, and `/run/niox` is root's), the config's atomic write (`0600`
+from creation, fsync of the file and the directory), the arbiter's
+choice and its retry when a grant can't be queued, and the relay's
+inbound path (`try_send` on the driver thread, no allocation beyond an
+`Arc` clone). The config and IPC enums (`Role`, `AudioMode`) are
+deliberately separate types, with one small mapping each in nioxd; see
+KM-7 for the status built twice.
+
+### CP-1: a config without `[identity]` silently re-keys a running nioxd (medium)
+
+`crates/niox-config/src/lib.rs` (`load`), called by
+`crates/nioxd/src/main.rs` (`Daemon::reload`).
+
+`load` treats a file without `[identity]` as a first run, on reload as
+well as at startup: it generates a new keypair, writes it into the
+file, and `Km::reload` then restarts everything under the new identity.
+Every peer still lists the old public key, so all of them refuse this
+machine, and the old private key, which by then was only in nioxd's
+memory, is dropped with the old KM. The usual way
+to get there is replacing `niox.toml` wholesale (from a template, a
+backup, or config management that doesn't know the key) and running
+`systemctl reload nioxd`; the reply is just "identity changed", which
+reads like success.
+
+Smaller effects of the same write: it replaces a symlinked `niox.toml`
+with a regular file, and a `SIGHUP` reload and a `nioxctl reload`
+running together share the temp file name `.niox.toml.tmp`, so one of
+them fails with a confusing `create` error.
+
+- **Fix:** generate an identity only at startup. On reload, refuse a
+  config without `[identity]` ("no [identity]; keeping the running
+  config; restore the private key or restart nioxd to generate a new
+  one"), using `parse` rather than `load`. Serialize reloads (the KM
+  lock already does, but `load` runs before taking it), or make the
+  temp name unique.
+
+### CP-2: one user can take every control connection (low)
+
+`crates/niox-ipc/src/server.rs`, `MAX_CONNECTIONS`.
+
+Connections have no idle timeout (a subscriber legitimately idles
+forever), and the limit of 64 is global. Any member of the `niox` group
+can open 64 connections and hold them, after which nioxd turns every
+other one away: `nioxctl` stops working, and a niox-session that
+restarts can't get the audio channel back. Group members are trusted
+to move focus and reload anyway, so this is only hardening.
+
+- **Fix:** also cap connections per uid (from `SO_PEERCRED`, which
+  `spawn_connection` already reads), say 16, so one user can't starve
+  another. Exempt root.
