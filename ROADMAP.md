@@ -364,6 +364,11 @@ between steps.
   *Verification*: with a Bluetooth or other slow output on the host, a
   client's reported latency grows by about that output's latency, and a
   lip-sync test video (a clap or beep test) lines up within ~20ms.
+  *Status*: implemented. On the VMs, the host reported its 21ms
+  quantum, and forcing an 8192-frame quantum (170ms) was reported in
+  seconds both ways; the client's latency settled at 280ms, up from
+  179ms (Roc's own queue settled lower). The Bluetooth and test-video
+  checks still need real machines.
 
 - [ ] **Audio: a lower default latency target** — the 200ms default is
   Roc's, not one measured on a LAN. FEC needs a full block (90ms at 5ms

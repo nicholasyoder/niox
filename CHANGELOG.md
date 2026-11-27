@@ -12,7 +12,9 @@ and `debian/changelog` carry a one-line summary of each release.
   (mpv, VLC, Firefox, Chromium, and others that ask the sound server)
   hold video back to match, instead of showing it about 200ms before
   the sound. It starts at the latency target and follows the measured
-  latency once the host reports it.
+  latency once the host reports it, including the host's own output
+  path (its sound server's buffering and the output device, which is
+  tens of milliseconds, and more on Bluetooth).
 
 ## 0.2.0 — 2026-11-27
 

@@ -9,7 +9,8 @@
 //! [`Sender::push`] and [`Receiver::pop`] hand each outgoing body to a
 //! closure (normally `Handle::send(peer, Subsystem::Audio, body)`), and
 //! bodies arriving as `Subsystem::Audio` data go to
-//! [`Sender::receive`] or [`Receiver::receive`] by [`Channel::to_sender`].
+//! [`Sender::receive`] or [`Receiver::receive`] by [`Channel::to_sender`]
+//! (all but [`Channel::Delay`], which is niox's own; see [`delay_body`]).
 //!
 //! [`Engine`] runs the streams in the user's PipeWire: the niox sink that
 //! captures a client's audio for its hosts, and a player per client on a
@@ -29,6 +30,12 @@
 //! | 2 repair     | sender   | receiver | repair (FEC)  |
 //! | 3 report     | sender   | receiver | control       |
 //! | 4 feedback   | receiver | sender   | control       |
+//! | 5 delay      | receiver | sender   | none          |
+//!
+//! A delay body isn't a Roc packet: it's how long the receiver's player
+//! takes to get decoded audio heard (its output path, past where Roc's
+//! end-to-end latency stops), as a little-endian `u32` of microseconds.
+//! The sender adds it to Roc's latency to know when its audio is heard.
 //!
 //! Roc packets are at most [`MAX_PACKET`] bytes, so a body always fits a
 //! single transport datagram. There's no ordering or retransmission of our
@@ -61,6 +68,9 @@ pub enum Error {
     /// receiver).
     #[error("{0:?} packets aren't for this end of the stream")]
     WrongEnd(Channel),
+    /// A delay body handed to Roc, or one of the wrong length.
+    #[error("not a Roc packet, or a malformed delay")]
+    Delay,
 }
 
 /// What an audio body carries: the first byte of every
@@ -76,6 +86,8 @@ pub enum Channel {
     Report = 3,
     /// RTCP from the receiver.
     Feedback = 4,
+    /// The receiver's playback delay (niox's own; see [`delay_body`]).
+    Delay = 5,
 }
 
 impl TryFrom<u8> for Channel {
@@ -87,6 +99,7 @@ impl TryFrom<u8> for Channel {
             2 => Ok(Self::Repair),
             3 => Ok(Self::Report),
             4 => Ok(Self::Feedback),
+            5 => Ok(Self::Delay),
             other => Err(Error::UnknownChannel(other)),
         }
     }
@@ -99,10 +112,10 @@ impl Channel {
         Ok((Self::try_from(first)?, packet))
     }
 
-    /// Whether this channel's packets go to a [`Sender`] (otherwise to a
-    /// [`Receiver`]).
+    /// Whether this channel's packets go to the sending end of a stream
+    /// (otherwise to a [`Receiver`]).
     pub fn to_sender(self) -> bool {
-        self == Self::Feedback
+        matches!(self, Self::Feedback | Self::Delay)
     }
 
     /// The channel a sender's packets on `iface` travel on.
@@ -112,6 +125,28 @@ impl Channel {
             Interface::Repair => Self::Repair,
             Interface::Control => Self::Report,
         }
+    }
+}
+
+/// A [`Channel::Delay`] body: the receiving end's player takes `delay`
+/// to get decoded audio heard. Saturates at `u32::MAX` microseconds.
+pub fn delay_body(delay: std::time::Duration) -> [u8; 5] {
+    let micros = u32::try_from(delay.as_micros()).unwrap_or(u32::MAX);
+    let mut body = [Channel::Delay as u8, 0, 0, 0, 0];
+    body[1..].copy_from_slice(&micros.to_le_bytes());
+    body
+}
+
+/// The delay in a [`Channel::Delay`] body.
+pub fn parse_delay(body: &[u8]) -> Result<std::time::Duration, Error> {
+    match Channel::split(body)? {
+        (Channel::Delay, packet) => {
+            let micros = <[u8; 4]>::try_from(packet).map_err(|_| Error::Delay)?;
+            Ok(std::time::Duration::from_micros(
+                u32::from_le_bytes(micros).into(),
+            ))
+        }
+        (channel, _) => Err(Error::WrongEnd(channel)),
     }
 }
 
@@ -168,6 +203,7 @@ impl Sender {
     pub fn receive(&self, body: &[u8]) -> Result<(), Error> {
         match Channel::split(body)? {
             (Channel::Feedback, packet) => Ok(self.encoder.push_feedback(packet)?),
+            (Channel::Delay, _) => Err(Error::Delay),
             (channel, _) => Err(Error::WrongEnd(channel)),
         }
     }
@@ -198,7 +234,7 @@ impl Receiver {
             Channel::Source => Interface::Source,
             Channel::Repair => Interface::Repair,
             Channel::Report => Interface::Control,
-            Channel::Feedback => return Err(Error::WrongEnd(channel)),
+            Channel::Feedback | Channel::Delay => return Err(Error::WrongEnd(channel)),
         };
         // A repair packet with FEC off would fail here; Roc decides what's
         // valid.
@@ -270,10 +306,14 @@ mod tests {
             Channel::Repair,
             Channel::Report,
             Channel::Feedback,
+            Channel::Delay,
         ] {
             let body = [channel as u8, 9, 9];
             assert_eq!(Channel::split(&body).unwrap(), (channel, &[9u8, 9][..]));
-            assert_eq!(channel.to_sender(), channel == Channel::Feedback);
+            assert_eq!(
+                channel.to_sender(),
+                matches!(channel, Channel::Feedback | Channel::Delay)
+            );
         }
         assert!(matches!(Channel::split(&[]), Err(Error::Empty)));
         assert!(matches!(
@@ -281,8 +321,8 @@ mod tests {
             Err(Error::UnknownChannel(0))
         ));
         assert!(matches!(
-            Channel::split(&[5, 1]),
-            Err(Error::UnknownChannel(5))
+            Channel::split(&[6, 1]),
+            Err(Error::UnknownChannel(6))
         ));
     }
 
@@ -326,6 +366,32 @@ mod tests {
     }
 
     #[test]
+    fn delays_round_trip() {
+        for delay in [
+            Duration::ZERO,
+            Duration::from_micros(42_667),
+            Duration::from_secs(3),
+        ] {
+            assert_eq!(parse_delay(&delay_body(delay)).unwrap(), delay);
+        }
+        // Whole microseconds, saturating.
+        let max = Duration::from_micros(u32::MAX.into());
+        assert_eq!(
+            parse_delay(&delay_body(Duration::from_nanos(1_999))).unwrap(),
+            Duration::from_micros(1)
+        );
+        assert_eq!(parse_delay(&delay_body(max * 2)).unwrap(), max);
+        assert!(matches!(
+            parse_delay(&[Channel::Delay as u8, 1, 2, 3]),
+            Err(Error::Delay)
+        ));
+        assert!(matches!(
+            parse_delay(&[Channel::Feedback as u8, 1, 2, 3, 4]),
+            Err(Error::WrongEnd(Channel::Feedback))
+        ));
+    }
+
+    #[test]
     fn bodies_for_the_other_end_are_refused() {
         let (sender, receiver) = pair(Fec::Disabled);
         assert!(matches!(
@@ -335,6 +401,14 @@ mod tests {
         assert!(matches!(
             receiver.receive(&[Channel::Feedback as u8, 0]),
             Err(Error::WrongEnd(Channel::Feedback))
+        ));
+        assert!(matches!(
+            receiver.receive(&delay_body(Duration::ZERO)),
+            Err(Error::WrongEnd(Channel::Delay))
+        ));
+        assert!(matches!(
+            sender.receive(&delay_body(Duration::ZERO)),
+            Err(Error::Delay)
         ));
     }
 }

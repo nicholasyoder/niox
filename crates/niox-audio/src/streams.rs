@@ -38,6 +38,9 @@ pub(crate) const IDLE_CHECKS: u32 = 5;
 /// Idle checks with a sender connected before its latency is logged.
 const LATENCY_REPORT: u32 = 3;
 
+/// How far a host's playback delay moves before it's logged again.
+const DELAY_LOG_STEP: Duration = Duration::from_millis(5);
+
 /// How long a [`Fader`] takes to go between muted and full volume, so a
 /// focus change doesn't click.
 const FADE: Duration = Duration::from_millis(20);
@@ -87,6 +90,9 @@ pub(crate) struct Streams {
     out: Out,
     plan: Mutex<Plan>,
     senders: Mutex<HashMap<String, Sender>>,
+    /// Each host's playback delay, as it last reported it. Kept apart
+    /// from the senders, which a pause replaces.
+    output_delays: Mutex<HashMap<String, Duration>>,
     /// When the sink last captured anything.
     last_capture: Mutex<Option<Instant>>,
     receivers: Mutex<HashMap<String, Playing>>,
@@ -119,6 +125,7 @@ impl Streams {
             out,
             plan: Mutex::default(),
             senders: Mutex::default(),
+            output_delays: Mutex::default(),
             last_capture: Mutex::default(),
             receivers: Mutex::default(),
             wanted: Mutex::default(),
@@ -146,6 +153,7 @@ impl Streams {
         {
             let mut senders = lock(&self.senders);
             senders.retain(|peer, _| plan.send_to.contains(peer));
+            lock(&self.output_delays).retain(|peer, _| plan.send_to.contains(peer));
             for peer in &plan.send_to {
                 if !senders.contains_key(peer) {
                     match Sender::new(&self.context, &encoder_config()) {
@@ -179,7 +187,21 @@ impl Streams {
                 return Delivery::Dropped;
             }
         };
-        let result = if channel.to_sender() {
+        let result = if channel == Channel::Delay {
+            if !lock(&self.senders).contains_key(peer) {
+                return Delivery::Dropped;
+            }
+            crate::parse_delay(body).map(|delay| {
+                let old = lock(&self.output_delays).insert(peer.to_owned(), delay);
+                if old.is_none_or(|old| old.abs_diff(delay) >= DELAY_LOG_STEP) {
+                    debug!(
+                        peer,
+                        delay_ms = delay.as_millis(),
+                        "a host's playback delay"
+                    );
+                }
+            })
+        } else if channel.to_sender() {
             match lock(&self.senders).get(peer) {
                 Some(sender) => sender.receive(body),
                 None => return Delivery::Dropped,
@@ -318,14 +340,27 @@ impl Streams {
         }
     }
 
-    /// The end-to-end latency of this machine's audio, as the hosts'
-    /// feedback last reported it: the longest, since a player into the
-    /// niox sink has to wait for every host. `None` until one reports.
+    /// How long this machine's audio takes to be heard on the hosts:
+    /// Roc's end-to-end latency, as the hosts' feedback last reported it,
+    /// plus each host's playback delay once that's in. The longest, since
+    /// a player into the niox sink has to wait for every host. `None`
+    /// until Roc's latency is reported.
     pub(crate) fn send_latency(&self) -> Option<Duration> {
-        lock(&self.senders)
-            .values()
-            .filter_map(Sender::latency)
+        let senders = lock(&self.senders);
+        let delays = lock(&self.output_delays);
+        senders
+            .iter()
+            .filter_map(|(peer, sender)| {
+                let delay = delays.get(peer).copied().unwrap_or_default();
+                Some(sender.latency()?.saturating_add(delay))
+            })
             .max()
+    }
+
+    /// Tells `peer` (a client) how long its audio takes from its
+    /// receiver to this machine's output.
+    pub(crate) fn report_delay(&self, peer: &str, delay: Duration) {
+        (self.out)(peer, &crate::delay_body(delay));
     }
 
     /// The gain the plan gives `peer`'s audio: 0 if muted, else 1.
@@ -584,6 +619,65 @@ mod tests {
             }
             assert_eq!(host.idle_check(), vec!["client".to_owned()]);
         }
+    }
+
+    /// A host's playback delay adds to what the client takes Roc's
+    /// latency to be, and outlasts a pause's fresh streams.
+    #[test]
+    fn a_hosts_playback_delay_counts() {
+        let (client, host, from_client) = pair();
+        let mut receiver = None;
+        let mut out = vec![0f32; 960];
+        let mut fader = Fader::new(1.0);
+        let mut chunk = 0;
+        // Roc's latency comes from wall-clock timestamps, so the audio is
+        // paced in real time until the client has it.
+        let mut stream_until = |what: &str, done: &dyn Fn(Duration) -> bool| {
+            let start = Instant::now();
+            loop {
+                client.capture(&tone(chunk));
+                chunk += 1;
+                for (peer, body) in from_client.try_iter() {
+                    if host.deliver(&peer, &body) == Delivery::Want {
+                        receiver = host.add_receiver(&peer).unwrap();
+                    }
+                }
+                if let Some(receiver) = &receiver {
+                    host.play("client", receiver, &mut fader, &mut out);
+                }
+                if let Some(latency) = client.send_latency().filter(|&l| done(l)) {
+                    return latency;
+                }
+                assert!(start.elapsed() < Duration::from_secs(10), "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let roc = stream_until("no latency", &|_| true);
+
+        // The pair's feedback runs on a thread of its own.
+        let delay = Duration::from_millis(250);
+        host.report_delay("client", delay);
+        let both = stream_until("no delay", &|l| l > roc + delay / 2);
+        // Roc's latency wanders a little as it's re-reported.
+        assert!(
+            both.abs_diff(roc + delay) < Duration::from_millis(50),
+            "{both:?} for {roc:?} + {delay:?}"
+        );
+
+        // A pause restarts the stream, and the delay counts again as soon
+        // as Roc's latency is back.
+        std::thread::sleep(2 * CAPTURE_GAP);
+        let resumed = stream_until("no latency after a pause", &|_| true);
+        assert!(resumed > delay, "{resumed:?}");
+
+        // A delay from a host the client doesn't send to is dropped.
+        assert_eq!(
+            client.deliver("other-host", &crate::delay_body(delay)),
+            Delivery::Dropped
+        );
+        // And dropping the host forgets it.
+        client.set_plan(Plan::default());
+        assert!(lock(&client.output_delays).is_empty());
     }
 
     #[test]

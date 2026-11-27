@@ -14,8 +14,9 @@ workspace = true
 [dependencies]
 niox-roc.workspace = true
 niox-transport.workspace = true
-# v0_3_49: a buffer's `requested` frame count.
-pipewire = { version = "0.10.1", features = ["v0_3_49"] }
+# v0_3_49: a buffer's `requested` frame count. v0_3_50: a stream's time
+# through pw_stream_get_time_n, with the frames its resampler holds.
+pipewire = { version = "0.10.1", features = ["v0_3_50"] }
 thiserror = "2.0.21"
 tracing = "0.1.44"
 

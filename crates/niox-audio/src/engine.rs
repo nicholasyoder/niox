@@ -12,7 +12,9 @@
 //!   [`Sink`]).
 //! - **a player per client**, once that client's audio arrives: a
 //!   playback stream into the default output, removed again once the
-//!   client has been quiet for a few seconds.
+//!   client has been quiet for a few seconds. It tells the client how
+//!   long its output path takes, which the client's sink adds to its
+//!   latency (see [`Player::delay`]).
 //!
 //! The default output is set through the `default` metadata's
 //! `default.configured.audio.sink`, the key `pactl set-default-sink` and
@@ -73,6 +75,10 @@ const EPIPE: i32 = 32;
 /// clocks that don't, and ignored.
 const PLAUSIBLE_LATENCY: std::ops::RangeInclusive<Duration> =
     Duration::from_millis(1)..=Duration::from_secs(5);
+
+/// Playback delays a host believes of its own players. PipeWire reports
+/// nonsense now and then while a graph is being rearranged.
+const PLAUSIBLE_DELAY: std::ops::RangeInclusive<Duration> = Duration::ZERO..=Duration::from_secs(2);
 
 /// How far the measured latency has to move from the reported one before
 /// the sink reports it again. Roc's measure wanders by a few
@@ -309,8 +315,33 @@ impl Sink {
 
 struct Player {
     _listener: StreamListener<Playback>,
-    _stream: StreamRc,
+    stream: StreamRc,
     receiver: Arc<Receiver>,
+}
+
+impl Player {
+    /// How long decoded audio takes from this player to be heard: the
+    /// graph's delay to the output device (its quantum, any filters, and
+    /// the device's own latency, a Bluetooth output's included) and the
+    /// frames waiting in the stream's resampler. Roc's end-to-end latency
+    /// stops where the player reads the decoder, so this is the rest of
+    /// the way. `None` while the stream isn't running.
+    fn delay(&self) -> Option<Duration> {
+        let time = self.stream.time().ok()?;
+        let rate = time.rate();
+        if rate.num == 0 || rate.denom == 0 {
+            return None;
+        }
+        // `delay` is in ticks of `rate` (seconds per tick), `buffered` in
+        // the stream's own frames.
+        let ticks = u64::try_from(time.delay()).ok()?;
+        let graph = ticks
+            .saturating_mul(1_000_000_000)
+            .saturating_mul(u64::from(rate.num))
+            / u64::from(rate.denom);
+        let buffered = time.buffered().saturating_mul(1_000_000_000) / u64::from(FORMAT.rate);
+        Some(Duration::from_nanos(graph.saturating_add(buffered)))
+    }
 }
 
 /// A metadata value and its type.
@@ -481,9 +512,9 @@ fn session(
         }
     });
 
-    // Once a second: remove quiet clients' players, bring the sink's
-    // latency up to date, and give up on a shutdown PipeWire never
-    // confirmed.
+    // Once a second: remove quiet clients' players, tell the others'
+    // clients their playback delay, bring the sink's latency up to date,
+    // and give up on a shutdown PipeWire never confirmed.
     let tick = Duration::from_secs(1);
     let timer = mainloop.loop_().add_timer({
         let (state, mainloop) = (Rc::downgrade(&state), mainloop.downgrade());
@@ -506,7 +537,18 @@ fn session(
                     info!(peer, "stopped playing a quiet client's audio");
                 }
             }
-            let State { sink, streams, .. } = &mut *state;
+            let State {
+                sink,
+                streams,
+                players,
+                ..
+            } = &mut *state;
+            for (peer, player) in players.iter() {
+                // Sent every time: it's tiny, and a datagram can be lost.
+                if let Some(delay) = player.delay().filter(|d| PLAUSIBLE_DELAY.contains(d)) {
+                    streams.report_delay(peer, delay);
+                }
+            }
             if let Some(sink) = sink {
                 sink.follow_latency(streams);
             }
@@ -839,7 +881,7 @@ fn make_player(
     )?;
     Ok(Player {
         _listener: listener,
-        _stream: stream,
+        stream,
         receiver,
     })
 }

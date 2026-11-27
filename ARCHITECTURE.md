@@ -340,7 +340,10 @@ user session.
   - *Framing.* Each body is one Roc packet behind a channel byte: source,
     repair (FEC), report (the sender's RTCP), or feedback (the
     receiver's RTCP). RTCP flows both ways on one Roc interface, so the
-    byte also says which end of the stream a packet is for. niox adds no
+    byte also says which end of the stream a packet is for. One more
+    channel, delay, is niox's own rather than Roc's: the receiver's
+    playback delay (a `u32` of microseconds), sent back to the sender
+    once a second (see *Latency* below). niox adds no
     ordering or retransmission of its own; Roc's RTP sequence numbers,
     jitter buffer, and FEC deal with loss and reordering.
   - *Format.* Frames are 32-bit float at any rate; on the wire Roc uses
@@ -388,11 +391,17 @@ user session.
       `pa_stream_get_latency` included), and players hold video back by
       it. It starts at the latency target (the client's own, which
       matches the host's unless they're configured differently). Once
-      Roc's feedback reports the measured end-to-end latency (the
-      longest of the hosts'), it switches to that, and follows it when
-      it moves by 15ms or more. A measured value outside 1ms–5s is taken
-      for clocks that disagree (Roc's measure assumes synced clocks) and
-      ignored. It doesn't yet count the host's own output path. Apps
+      Roc's feedback reports the measured end-to-end latency, it
+      switches to that plus the host's playback delay, and follows it
+      when it moves by 15ms or more (the longest of the hosts', with
+      several). Roc's latency stops where the host's player reads the
+      decoder, so once a second each player on the host measures the
+      rest of the way (`pw_stream_get_time_n`: the graph's delay to the
+      output device, which counts its quantum, filters, and the device's
+      own latency, a Bluetooth output's included, plus the frames in the
+      stream's resampler) and sends it to its client on the delay
+      channel. A measured value outside 1ms–5s is taken for clocks that
+      disagree (Roc's measure assumes synced clocks) and ignored. Apps
       that ignore reported latency still hear the full delay.
     - *Pauses.* PipeWire only runs the sink while something plays into
       it, so captured audio comes in bursts. Sending stops in the gaps,
