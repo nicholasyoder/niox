@@ -67,8 +67,8 @@ screen before anyone has logged in.
 │  │  - hotkey/focus     │                     │    mix/mux          │ │
 │  │    detection        │                     │  - reacts to focus  │ │
 │  │  - Noise-encrypted  │                     │    events           │ │
-│  │    UDP send         │                     │  - HTTP control API │ │
-│  │    (KM hot path)    │                     │    + web UI         │ │
+│  │    UDP send         │                     │  - tray icon        │ │
+│  │    (KM hot path)    │                     │                     │ │
 │  └─────────┬───────────┘                     └─────────┬───────────┘ │
 └────────────┼───────────────────────────────────────────┼─────────────┘
              │ KM events (Noise/UDP)            audio (Roc packets,
@@ -80,8 +80,8 @@ screen before anyone has logged in.
 │  │  (root, system unit)│                     │  (user session,     │ │
 │  │  - owns config      │                     │   optional)         │ │
 │  │  - Noise-encrypted  │                     │  - audio capture    │ │
-│  │    UDP receive      │                     │  - HTTP control API │ │
-│  │  - uinput write     │                     │    + web UI         │ │
+│  │    UDP receive      │                     │  - tray icon        │ │
+│  │  - uinput write     │                     │                     │ │
 │  │    (KM hot path)    │                     │                     │ │
 │  └─────────────────────┘                     └─────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
@@ -129,8 +129,8 @@ user session.
 - Subscribes to nioxd's **focus events** and reacts by adjusting the
   audio mixer (mute non-focused clients in "follow focus" mode, or leave
   everything mixed in "always mix" mode — selected in config).
-- Runs the HTTP control API and serves the web UI (see below). Config
-  edits are sent to nioxd over IPC rather than written directly.
+- Shows the tray icon (see "Control plane" below). Config edits are
+  sent to nioxd over IPC rather than written directly.
 - Learns everything from nioxd: it subscribes on the control socket and
   keeps a view of focus and each peer's name, role, and connection, which
   is the config slice it needs (nioxd's config file is root-only, and
@@ -458,18 +458,41 @@ user session.
 
 ## Control plane
 
-- Before the web UI exists, `nioxctl` (talking to the nioxd socket) and
-  `systemctl reload` are the control surface.
-- The HTTP server and web UI are the **primary** long-term control
-  surface, not a system tray, because they work on headless hosts where
-  a tray icon can't exist.
-- Bound to the LAN interface (not just localhost), so it's reachable from
-  a phone or other device on the network. Because of that, it requires its
-  own lightweight auth (a token/password, separate from the Noise
-  handshake used for the KM/audio wire protocol — this secures *access to
-  the control plane*, not the media streams).
-- A tray icon may still be added later as optional convenience on desktop
-  machines, but niox must be fully operable with it entirely absent.
+- **The control socket is the control API.** Every front end
+  (`nioxctl`, the tray icon, the settings window) is a client of
+  `/run/niox/niox.sock`, and anything one can do, `nioxctl` can do too.
+  niox is fully operable with no desktop at all: a headless machine, or
+  one at the login screen, is controlled with `nioxctl` (over SSH if
+  need be) or by editing the config file.
+- **No network-facing control.** There's no HTTP listener. The control
+  API can add peers, and a peer gets this machine's input, so exposing it
+  on the LAN would need real auth and TLS to stay as strong as the
+  Noise-protected wire protocol. Since the machine with the keyboard and
+  mouse runs a desktop session, that isn't worth it (see "Explicitly
+  deferred").
+- **nioxd is the only writer of its config.** An edit request names the
+  revision it was made against and is refused if the file changed since.
+  nioxd applies it to the file as written (`toml_edit`, so comments and
+  hand formatting survive), validates the result, writes it atomically,
+  and reloads. The private key never leaves nioxd. Any member of the
+  `niox` group can send edits, and so add peers: treat membership as
+  admin-equivalent for input.
+- **Hotkey capture happens in nioxd**, which reports the next key
+  combination from the real devices as evdev codes. Front ends never map
+  toolkit key names to evdev codes, and the captured codes are exactly
+  what the hotkey matcher sees.
+- **Tray icon** — in niox-session, a StatusNotifierItem via `ksni`
+  (D-Bus only, no GUI toolkit, so niox-session still runs with no
+  display). It shows focus and nioxd's reachability, and its menu
+  switches focus, mutes clients (runtime state in niox-session's
+  mixer), toggles follow-focus, and opens the settings window. With no
+  tray host, it does nothing.
+- **Settings window** — `niox-settings`, a separate egui (`eframe`,
+  glow backend) binary that the tray launches. Keeping it out of
+  niox-session means no GUI toolkit in the long-running audio process,
+  and a crash in it can't touch audio. It talks to the socket directly,
+  subscribes for status so it stays current, and runs one instance at a
+  time.
 
 ## Repo structure
 
@@ -483,16 +506,15 @@ niox/
   Cargo.toml           # workspace root
   crates/
     nioxd/             # bin: privileged system service — config owner, KM capture/send/receive/uinput
-    niox-session/      # bin: user-session process — audio, control API, web UI
+    niox-session/      # bin: user-session process — audio, tray icon
     nioxctl/           # bin: CLI over the nioxd socket (status, pubkey, focus, reload, watch)
     niox-km/           # evdev/uinput capture + virtual input, hotkey/focus logic
     niox-audio/        # capture, Roc encode/decode, mixer, focus-follow logic
     niox-roc/          # bindgen bindings to libroc's encoder/decoder (the only FFI crate)
     niox-transport/    # Noise handshake + AEAD-wrapped UDP, shared by subsystems
     niox-ipc/          # UDS control channel (nioxd <-> niox-session/nioxctl)
-    niox-control/      # HTTP API + web UI (assets embedded in the binary)
+    niox-settings/     # bin: egui settings window over the nioxd socket
     niox-config/       # shared TOML config loading
-  web/                 # web UI static assets/frontend source
   archive/go/          # archived Go prototype, reference only
   old/                 # NKMS and audio-switcher, kept for reference
 ```
@@ -509,8 +531,7 @@ once it has a design.
   between. Low-frequency work (the control socket, timers, signal
   handling) also gets threads, talking over `std::sync::mpsc` or
   crossbeam channels. An async runtime may be used where it earns its
-  keep off the hot path (e.g. the HTTP server in niox-control), but never
-  in nioxd's KM threads.
+  keep off the hot path, but never in nioxd's KM threads.
 - **Errors**: library crates define typed errors with `thiserror`;
   binaries use `anyhow` and add context at each layer. Per the usual
   convention, an error's `Display` describes only its own layer and
@@ -567,7 +588,7 @@ once it has a design.
   role = "client"             # the peer's role relative to this machine: "host" or "client"
   ```
 
-  Later subsystems add their own tables (e.g. a web UI token).
+  Later subsystems add their own tables.
 - First run: if the file is missing, nioxd writes a commented default
   with a fresh keypair. If it exists without `[identity]` (e.g. a
   packaged template), one is appended and the rest is left as written.
@@ -642,11 +663,10 @@ once it has a design.
 - Windows and mobile client support (Roc has no Windows support; mobile
   capture APIs are a different problem per OS — see
   `old/audio-switcher/CROSS_PLATFORM.md`).
-- Tray icon convenience layer.
+- Network-facing control: an HTTP API or web UI for a phone or a
+  headless host. It would need real auth and TLS (see "Control plane"),
+  and could be limited to status, focus, and mute.
 
 ## Open questions to revisit
 
-- Where the HTTP control API runs on a headless host: in `niox-session`
-  under a lingering user, or in a separate unprivileged system service
-  so the web UI needs no user session at all.
-- Web UI auth mechanism specifics (static token vs. session login).
+- None right now.

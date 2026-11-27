@@ -14,24 +14,23 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
 **Status:** early development. niox is being built in Rust, starting
 with keyboard/mouse. The goal is full Linux parity with NKMS
 (multi-client, hot-plug, login-screen support, RPM/deb packaging) so NKMS
-can be retired. Audio and the web UI come after that. An earlier Go
-prototype that reached single-client keyboard/mouse is archived in
-`archive/go/` for reference.
+can be retired. Audio and a tray icon with a settings window come after
+that. An earlier Go prototype that reached single-client keyboard/mouse
+is archived in `archive/go/` for reference.
 
 ## Layout
 
 A Cargo workspace; crates are added as the roadmap reaches them.
 
 - `crates/nioxd` -- privileged system service: config owner, KM capture/send/receive, virtual input
-- `crates/niox-session` -- optional user-session binary: audio, control API, web UI
+- `crates/niox-session` -- optional user-session binary: audio, tray icon
 - `crates/nioxctl` -- CLI over the nioxd control socket
 - `crates/niox-km`, `crates/niox-audio` -- per-subsystem logic
 - `crates/niox-roc` -- bindings to libroc (Roc's audio encoder/decoder)
 - `crates/niox-transport` -- encrypted UDP transport shared by subsystems
 - `crates/niox-ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
-- `crates/niox-control` -- HTTP API + web UI
+- `crates/niox-settings` -- egui settings window
 - `crates/niox-config` -- shared TOML config
-- `web/` -- control UI frontend source
 - `archive/go/` -- archived Go prototype, reference only
 
 ## Development

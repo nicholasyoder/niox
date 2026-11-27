@@ -9,7 +9,8 @@ that turn out bigger. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
 design each step implements.
 
 **Current priority: keyboard/mouse at full Linux parity with NKMS, then
-retire NKMS.** Audio comes after that, then the web UI. Fedora is the
+retire NKMS.** Audio comes after that, then the tray icon and settings
+window. Fedora is the
 primary target OS, with `.deb` packages kept as a secondary target.
 macOS is deferred (see below).
 
@@ -177,7 +178,7 @@ are and just get checked off; nothing moves into this section.
     status to subscribers. It never carries per-event KM data.
   - `nioxctl status` (focus, connected peers), `nioxctl pubkey` (for
     pairing), and `nioxctl focus <target>`. This is the parity stand-in
-    for NKMS's tray applet until the web UI exists.
+    for NKMS's tray applet until the tray icon exists.
 
   *Verification*: integration tests over a temp socket. On a real
   machine, a user in the `niox` group can run `nioxctl status`, and a
@@ -295,15 +296,86 @@ are and just get checked off; nothing moves into this section.
   *Verification*: on fresh Fedora and Debian installs, audio works
   after a reboot and login. A KM-only install doesn't pull in libroc.
 
-## Control API + web UI
+## Tray + settings window
 
-- [ ] **Control API + web UI** (`niox-control`) — HTTP status (focus,
-  peers, audio state) and control (switch focus, edit config via nioxd,
-  mute, focus-follow toggle), LAN-reachable with token auth, usable from
-  a phone. Must work on a headless host. Decide first where the HTTP
-  server runs (see ARCHITECTURE.md open questions).
-  *Verification*: switch focus, edit a peer, and toggle focus-follow
-  from a phone browser, against a host with nobody logged in.
+The desktop control surface replacing NKMS's applet and settings
+window: a tray icon in niox-session and an egui settings window, both
+built on nioxd's control socket (see ARCHITECTURE.md "Control plane").
+There's no network-facing control. A headless machine, or one at the
+login screen, is configured with `nioxctl` (over SSH if need be) or by
+editing the config file.
+
+- [ ] **Control API: config edits** — nioxd edits its own config on
+  request, so no front end ever writes the file:
+  - Requests on the control socket to read the editable config (no
+    private key) and to add, change, or remove a peer and set `[km]` and
+    `[audio]` fields. Each edit carries the revision it was made
+    against; nioxd rejects it if the file has changed since (a hand edit,
+    another front end).
+  - nioxd applies an edit to the file as written (`toml_edit`, keeping
+    comments and layout), validates the result with `niox-config`,
+    writes it atomically, then reloads as if sent SIGHUP. A failed
+    validation leaves the file untouched and names the field, as at
+    load.
+  - `nioxctl` subcommands covering the same edits (e.g. `nioxctl peer
+    add|set|remove`, `nioxctl set audio.mode follow-focus`).
+
+  *Verification*: integration tests over a temp socket: an edit
+  round-trips with comments intact, an invalid edit and a stale one are
+  both refused without touching the file. On the VMs, pair a new client
+  using only `nioxctl peer add` on both ends, with no restart, and a
+  user outside the `niox` group is refused.
+
+- [ ] **Control API: hotkey capture** — a request that has nioxd report
+  the next key combination pressed on any of its keyboards, as evdev
+  codes, so front ends never translate toolkit key names. The current
+  hotkey doesn't switch focus while a capture is running, and a capture
+  ends on a timeout or when its connection closes. `nioxctl hotkey
+  capture` prints the result, which `nioxctl set km.hotkey` applies.
+  *Verification*: on a VM driven with `virsh send-key`, a capture
+  returns the pressed codes, pressing the current hotkey during it
+  doesn't move focus, and the captured hotkey switches focus once set.
+
+- [ ] **Tray icon** — a StatusNotifierItem in niox-session via `ksni`
+  (D-Bus only, no GUI toolkit):
+  - The icon and tooltip show where focus is (host or which client) and
+    whether nioxd is reachable. On a client, it shows whether this
+    machine has focus.
+  - Menu: focus targets with their connection state; on a host,
+    per-client mute (runtime only, through niox-session's mixer) and the
+    follow-focus toggle (an `[audio] mode` edit through nioxd); and
+    "Settings…", which launches `niox-settings`.
+  - Icons ship in the hicolor theme with niox-session's subpackage. With
+    no tray host (stock GNOME, a lingering user), niox-session runs as
+    before, and the icon appears once a tray host does.
+
+  *Verification*: on the KDE VM, switch focus, mute a client, and toggle
+  follow-focus from the tray. Restarting plasmashell brings the icon
+  back, stopping nioxd shows it as unreachable until it returns, and
+  `kill -9` of niox-session never affects KM.
+
+- [ ] **Settings window** (`niox-settings`) — a separate binary using
+  egui (`eframe`, glow backend), launched from the tray, talking to
+  nioxd's socket directly:
+  - Sections for this machine (public key with copy, port), peers (add,
+    edit, remove), the hotkey (set by capture), and audio (enable, mode,
+    latency). nioxd's validation errors show next to the field.
+  - Subscribes for status and repaints on each event
+    (`request_repaint`), so it stays current while open, including
+    after hand edits.
+  - One instance at a time (a lock in `$XDG_RUNTIME_DIR`; a second
+    launch just exits). Wayland app_id `niox-settings` with a matching
+    `.desktop` file and icon. System fonts loaded as a fallback so
+    non-Latin peer names render.
+  - Its own subpackage, so machines without a desktop don't pull in its
+    dependencies. UI tests with `egui_kittest` in `cargo test`.
+
+  *Verification*: on the VMs, pair a new client entirely from the
+  window, change the hotkey by capture and use it, and toggle the audio
+  mode. Hand-edit the config while the window is open and confirm it
+  refreshes, and that saving a change made before the hand edit is
+  refused. Installs from both the RPM and the `.deb` and launches from
+  the desktop menu.
 
 ## Explicitly deferred
 
@@ -320,9 +392,12 @@ Tracked as future work, not scheduled into the items above:
 - Clipboard sharing between host and clients.
 - Windows support (Roc has no Windows support today).
 - Mobile clients.
-- Tray icon convenience layer for desktop machines.
 - Per-client audio volume beyond mute.
-- Web UI auth beyond a static token (e.g. proper session login).
+- Network-facing control (an HTTP API or web UI for a phone or a
+  headless host). Config edits can add peers, which hands that peer
+  this machine's input, so a LAN listener needs real auth and TLS, not
+  just a token. If it returns, consider limiting it to status, focus,
+  and mute.
 
 ## Bugfixes
 
