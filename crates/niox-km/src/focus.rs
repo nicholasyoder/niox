@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(cycle(&mut r, 3), [Client('b'), Client('c'), Host]);
     }
 
-    // NKMS's client-removal edge cases (old/nkms commit 31a289a).
+    // NKMS's client-removal edge cases (https://github.com/nicholasyoder/nkms/commit/31a289a).
 
     #[test]
     fn removing_focused_client_returns_to_host() {

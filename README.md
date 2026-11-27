@@ -1,22 +1,28 @@
 # niox — Network I/O Exchange
 
-niox lets one host machine (with a physical keyboard, mouse, and
-eventually screen) control and exchange input, audio, and eventually
-video with other machines over the LAN.
+niox shares one machine's keyboard and mouse with the other machines
+on your LAN, and plays their audio on it. You sit at the **host**, press
+a hotkey to move input focus to a **client**, and the clients' audio
+plays on the host's speakers. Video is planned later.
 
-It's the successor to two earlier projects kept under `old/` for
-reference: `nkms` (keyboard/mouse switching) and `audio-switcher`
-(network audio mixing).
+It works at the evdev/uinput layer rather than inside the desktop, so
+it doesn't care about X11 vs. Wayland or which desktop a machine runs,
+and keyboard/mouse work at the login screen before anyone has logged
+in. Traffic is encrypted (Noise), peers are configured by hand by
+address and public key, and there's no discovery, cloud service, or
+virtual network interface.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
+niox replaces [NKMS](https://github.com/nicholasyoder/nkms)
+(keyboard/mouse switching) and an earlier audio-switcher project.
+
+**Status:** keyboard/mouse (multiple clients, device hot-plug, login
+screen) and audio (each client's output mixed on the host, optionally
+following focus) are done, packaged as RPMs and
+`.deb`s. Next up is a tray icon and settings window; until then, setup
+is a TOML file and `nioxctl`. Linux only: Fedora is the primary target,
+Debian secondary, and macOS is deferred. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the design and
 [ROADMAP.md](ROADMAP.md) for progress.
-
-**Status:** early development. niox is being built in Rust, starting
-with keyboard/mouse. The goal is full Linux parity with NKMS
-(multi-client, hot-plug, login-screen support, RPM/deb packaging) so NKMS
-can be retired. Audio and a tray icon with a settings window come after
-that. An earlier Go prototype that reached single-client keyboard/mouse
-survives as the `go-prototype` git tag.
 
 ## Layout
 
@@ -29,7 +35,7 @@ A Cargo workspace; crates are added as the roadmap reaches them.
 - `crates/niox-roc` -- bindings to libroc (Roc's audio encoder/decoder)
 - `crates/niox-transport` -- encrypted UDP transport shared by subsystems
 - `crates/niox-ipc` -- local control channel (nioxd listens; niox-session and nioxctl connect)
-- `crates/niox-settings` -- egui settings window
+- `crates/niox-settings` -- egui settings window (planned)
 - `crates/niox-config` -- shared TOML config
 
 ## Development

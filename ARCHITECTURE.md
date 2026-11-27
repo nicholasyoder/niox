@@ -5,12 +5,11 @@
 niox lets a single **host** machine — the one with your keyboard, mouse, and
 (eventually) other physical I/O plugged in — control and exchange input,
 audio, and eventually video with one or more **client** machines over the
-LAN. It's the successor to two earlier projects, both kept under `old/` for
-reference:
+LAN. It's the successor to two earlier projects:
 
-- **NKMS** (`old/nkms`, Python) — one host drives many clients' keyboard and
-  mouse, cycling focus between them on a hotkey.
-- **audio-switcher** (`old/audio-switcher`, Go) — many clients' audio mixes
+- **[NKMS](https://github.com/nicholasyoder/nkms)** (Python) — one host drives many
+  clients' keyboard and mouse, cycling focus between them on a hotkey.
+- **audio-switcher** (Go, never published) — many clients' audio mixes
   together onto one hub's speakers.
 
 niox unifies these into one system, in one language, with a shared security
@@ -515,7 +514,6 @@ niox/
     niox-ipc/          # UDS control channel (nioxd <-> niox-session/nioxctl)
     niox-settings/     # bin: egui settings window over the nioxd socket
     niox-config/       # shared TOML config loading
-  old/                 # NKMS and audio-switcher, kept for reference
 ```
 
 Crates are created when the roadmap reaches them; video gets a crate
@@ -659,9 +657,25 @@ once it has a design.
   nothing further should be assumed until that design happens separately.
 - Clipboard sharing.
 - Per-client audio volume controls beyond mute.
-- Windows and mobile client support (Roc has no Windows support; mobile
-  capture APIs are a different problem per OS — see
-  `old/audio-switcher/CROSS_PLATFORM.md`).
+- Windows and mobile client support. Each platform has two separate
+  problems, transport and capture, and the notes carried over from
+  audio-switcher's research are:
+  - **Windows**: Roc has no Windows support, so it needs a second
+    transport (a small UDP + Opus sender is favored over WebRTC, whose
+    ICE/SDP signaling cuts against manual config). WASAPI loopback only
+    taps a real endpoint, which can vanish with nothing plugged in, so
+    a correct client needs a signed virtual audio driver, set as default
+    through the undocumented `IPolicyConfig` COM interface.
+  - **Android**: no Roc either, same transport problem. Capture is easy:
+    `AudioPlaybackCapture` (Android 10+) taps the system mixer, no root
+    or virtual device needed.
+  - **iOS**: no system-wide capture API and no third-party audio
+    drivers. Only a user-started ReplayKit broadcast extension comes
+    close, so it's likely out of scope.
+  - **macOS** audio (KM is covered above): Roc builds via Homebrew.
+    Capture is a ScreenCaptureKit tap (macOS 13+, needs real output) or
+    a CoreAudio `AudioServerPlugin` virtual device (BlackHole-style,
+    signed driver) for the no-speakers case.
 - Network-facing control: an HTTP API or web UI for a phone or a
   headless host. It would need real auth and TLS (see "Control plane"),
   and could be limited to status, focus, and mute.

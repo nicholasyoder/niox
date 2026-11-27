@@ -8,9 +8,8 @@ name. Each step should fit in roughly one working session; split any
 that turn out bigger. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
 design each step implements.
 
-**Current priority: keyboard/mouse at full Linux parity with NKMS, then
-retire NKMS.** Audio comes after that, then the tray icon and settings
-window. Fedora is the primary target OS, with `.deb` packages kept as a
+**Current priority: the tray icon and settings window.** Keyboard/mouse
+has reached Linux parity with NKMS and replaced it, and audio is done. Fedora is the primary target OS, with `.deb` packages kept as a
 secondary target. macOS is deferred (see below).
 
 ## Ground rules
@@ -115,8 +114,8 @@ are and just get checked off; nothing moves into this section.
   - The hotkey state machine (port the Go prototype's tests, including
     the synthetic key1-press behavior), and focus cycling over N targets
     (host → client 1 → client 2 → … → host) with clients joining and
-    leaving. Cover NKMS's client-removal edge cases (`old/nkms` commit
-    31a289a) as unit tests: removing the focused client, the last
+    leaving. Cover NKMS's client-removal edge cases (NKMS commit
+    [31a289a](https://github.com/nicholasyoder/nkms/commit/31a289a91f1e6492bf137fd27a77e09501f1eaab)) as unit tests: removing the focused client, the last
     client, or one before the focused client.
   - Held-key tracking, so everything held can be released on a target
     when focus leaves it or its connection drops.
@@ -257,8 +256,7 @@ are and just get checked off; nothing moves into this section.
   reading never delays KM, and `kill -9` of it frees the channel.
 
 - [x] **Audio: one client → host** — capture from a dedicated PipeWire
-  null sink set as the client's default (per
-  `old/audio-switcher/CROSS_PLATFORM.md`, so it works with no speakers
+  null sink set as the client's default (so it works with no speakers
   attached) via `pipewire-rs`, sent to the host and played to its output
   sink.
   - The null sink lives only as long as niox-session, so if
@@ -375,7 +373,8 @@ editing the config file.
 Tracked as future work, not scheduled into the items above:
 
 - **macOS support.** Not a current focus. If it returns, NKMS already has
-  a working macOS client to port (`old/nkms/nkms/core/virtual_input_macos.py`:
+  a working macOS client to port
+  ([`virtual_input_macos.py`](https://github.com/nicholasyoder/nkms/blob/6f889581396030e5839d5aef255ad018a72ea41c/nkms/core/virtual_input_macos.py):
   Quartz event posting, drag and double-click handling, and
   multi-display edge clamping, plus a LaunchAgent and menu-bar applet).
   macOS doesn't fit the Linux root-service/user-session split. It would be

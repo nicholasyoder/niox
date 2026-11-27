@@ -1,7 +1,7 @@
 //! The focus-switch hotkey state machine.
 //!
 //! A port of NKMS's `EventHandler` key1/key2 logic
-//! (`old/nkms/nkms/core/event_handler.py`, by way of the Go prototype's
+//! (<https://github.com/nicholasyoder/nkms/blob/6f889581396030e5839d5aef255ad018a72ea41c/nkms/core/event_handler.py>, by way of the Go prototype's
 //! `hotkey.go`). With a two-key hotkey, focus switches once key1 and key2
 //! have both been pressed and both released, in either release order. The
 //! key1 press is held back until it's clear whether it starts the hotkey;

@@ -32,8 +32,8 @@ outside tests.
   and no virtual NICs.
 - Refer to roadmap steps by name, never by number. Check steps off in
   place in ROADMAP.md.
-- `old/` is for reference only. Don't port them line by
-  line, and don't edit them.
+- [NKMS](https://github.com/nicholasyoder/nkms) is the reference for KM
+  behavior. Don't port it line by line.
 - Multi-machine checks run on the libvirt VMs in `tools/testvm/`
   (see its README). Boot only what a test needs, and shut the VMs down
   afterward. `tools/dev/deploy.sh` pushes dev builds to machines over SSH.
