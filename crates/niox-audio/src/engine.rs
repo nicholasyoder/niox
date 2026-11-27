@@ -784,10 +784,19 @@ fn make_sink(state: &Rc<RefCell<State>>, plan: &Plan) -> Result<Sink, pw::Error>
 }
 
 fn add_player(state: &Rc<RefCell<State>>, peer: &str) {
-    if state.borrow().players.contains_key(peer) {
-        return;
-    }
     let streams = Arc::clone(&state.borrow().streams);
+    // A player whose receiver `Streams` has already dropped (a plan change
+    // whose `Command::Plan` is still queued behind this ask) goes now.
+    // Returning instead would leave the ask unanswered, and `Streams`
+    // never asks twice, so the client would stay silent.
+    let mut s = state.borrow_mut();
+    if let Some(player) = s.players.get(peer) {
+        if streams.is_current(peer, &player.receiver) {
+            return;
+        }
+        s.players.remove(peer);
+    }
+    drop(s);
     let receiver = match streams.add_receiver(peer) {
         Ok(Some(receiver)) => receiver,
         Ok(None) => return,
