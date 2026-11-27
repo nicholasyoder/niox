@@ -354,7 +354,7 @@ between steps.
   sees about 220ms more latency than on a null sink (46ms), and the
   value moves to the measured latency once it's in.
 
-- [ ] **Audio: lip sync counts the host's output** — Roc's end-to-end
+- [x] **Audio: lip sync counts the host's output** — Roc's end-to-end
   latency stops where the host's player reads the decoder, so what the
   sink reports leaves out the host's own playback path (its graph
   quantum and output device, tens of ms; more on a Bluetooth output).
@@ -364,16 +364,8 @@ between steps.
   *Verification*: with a Bluetooth or other slow output on the host, a
   client's reported latency grows by about that output's latency, and a
   lip-sync test video (a clap or beep test) lines up within ~20ms.
-  *Status*: implemented. On the VMs, the host reported its 21ms
-  quantum, and forcing an 8192-frame quantum (170ms) was reported in
-  seconds both ways; the client's latency settled at 280ms, up from
-  179ms (Roc's own queue settled lower). The Bluetooth and test-video
-  checks still need real machines.
+  On the VMs, the host reported its 21ms quantum, and forcing an
+  8192-frame quantum (170ms) was reported in seconds both ways; the
+  client's latency settled at 280ms, up from 179ms (Roc's own queue
+  settled lower). Checked on real machines with 0.2.1.
 
-- [ ] **Audio: a lower default latency target** — the 200ms default is
-  Roc's, not one measured on a LAN. FEC needs a full block (90ms at 5ms
-  packets) plus jitter headroom. Measure dropouts at 120–160ms on real
-  wired and Wi-Fi machines and lower the default if it holds. Shorter
-  delay helps apps that ignore reported latency (games, calls).
-  *Verification*: a 10-minute stream at the new default has no audible
-  dropouts on wired and Wi-Fi clients.
