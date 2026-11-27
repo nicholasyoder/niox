@@ -12,7 +12,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use niox_config::{
     Audio, AudioMode, ConfigError, DEFAULT_AUDIO_LATENCY, DEFAULT_HOTKEY, DEFAULT_PORT, Hotkey,
-    LoadError, PrivateKey, Role, load, parse,
+    LoadError, PrivateKey, Role, load, parse, read,
 };
 
 fn mode(path: &Path) -> u32 {
@@ -185,6 +185,68 @@ fn unreadable_path_is_an_io_error() {
         matches!(err, LoadError::Io { action: "read", .. }),
         "{err:?}"
     );
+}
+
+#[test]
+fn reload_read_refuses_config_without_identity_and_leaves_it_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("niox.toml");
+    let running = load(&path).unwrap().config;
+
+    // The file is replaced wholesale with one that has no [identity].
+    let replaced = peer("desk", "10.0.0.2", &pubkey(), "client");
+    fs::write(&path, &replaced).unwrap();
+    let err = read(&path).unwrap_err();
+    assert!(matches!(err, LoadError::Config { .. }), "{err:?}");
+    let cause = std::error::Error::source(&err).unwrap().to_string();
+    assert!(cause.contains("identity"), "{cause}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), replaced);
+    assert!(!dir.path().join(".niox.toml.tmp").exists());
+
+    // With the identity back, read returns it unchanged.
+    let restored = format!(
+        "[identity]\nprivate_key = \"{}\"\n\n{replaced}",
+        base64_of(running.identity.private_key.as_bytes())
+    );
+    fs::write(&path, &restored).unwrap();
+    let reread = read(&path).unwrap();
+    assert_eq!(reread.identity.public_key, running.identity.public_key);
+    assert_eq!(fs::read_to_string(&path).unwrap(), restored);
+}
+
+#[test]
+fn reload_read_never_creates_a_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("niox.toml");
+    let err = read(&path).unwrap_err();
+    assert!(
+        matches!(err, LoadError::Io { action: "read", .. }),
+        "{err:?}"
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn first_run_writes_through_a_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("real.toml");
+    let link = dir.path().join("niox.toml");
+    let original = peer("desk", "10.0.0.2", &pubkey(), "client");
+    fs::write(&target, &original).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let loaded = load(&link).unwrap();
+    assert!(loaded.created_identity);
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let written = fs::read_to_string(&target).unwrap();
+    assert!(written.starts_with(&original));
+    assert!(written.contains("[identity]"));
+    assert_eq!(mode(&target), 0o600);
 }
 
 // --- round trip ----------------------------------------------------------

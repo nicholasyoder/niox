@@ -1,5 +1,5 @@
 //! Writing the config file. nioxd only ever writes it to add a generated
-//! identity on first run.
+//! identity on first run, at startup, so writes never race each other.
 
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Write as _};
@@ -79,8 +79,21 @@ pub(crate) fn append_identity(text: &str, key: &PrivateKey) -> String {
 }
 
 /// Atomically replaces `path` with `text`, mode `0600`, creating the
-/// parent directory if needed.
+/// parent directory if needed. A symlink at `path` is followed, so the
+/// file it points to is replaced and the link stays.
 pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), LoadError> {
+    let resolved;
+    let path = match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            resolved = fs::canonicalize(path).map_err(|source| LoadError::Io {
+                action: "resolve symlink",
+                path: path.to_owned(),
+                source,
+            })?;
+            resolved.as_path()
+        }
+        _ => path,
+    };
     let io_err = |action, path: &Path| {
         let path = path.to_owned();
         move |source| LoadError::Io {

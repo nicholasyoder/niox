@@ -13,16 +13,17 @@
 //! the audio channel.
 //!
 //! `SIGHUP` (`systemctl reload nioxd`) or `nioxctl reload` re-reads the
-//! config and applies it without a restart. An invalid config is refused
-//! and the running one kept.
+//! config and applies it without a restart. An invalid config, including
+//! one without `[identity]`, is refused and the running one kept: only
+//! startup generates an identity.
 
 mod audio;
 mod km;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use anyhow::{Context as _, bail};
@@ -80,6 +81,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let relay = Arc::new(audio::Relay::default());
     let daemon = Arc::new(Daemon {
         config_path: args.config.clone(),
+        reloading: Mutex::new(()),
         km: km::Km::start(loaded.config, &stop, &publisher, &relay)?,
         relay,
     });
@@ -137,16 +139,24 @@ fn run(args: Args) -> anyhow::Result<()> {
 #[derive(Debug)]
 struct Daemon {
     config_path: PathBuf,
+    /// Held for a whole reload, so a `SIGHUP` and a `nioxctl reload` at
+    /// once apply in the order they read the file.
+    reloading: Mutex<()>,
     km: km::Km,
     relay: Arc<audio::Relay>,
 }
 
 impl Daemon {
     /// Re-reads the config and applies it. An invalid config changes
-    /// nothing.
+    /// nothing, and neither does one without `[identity]`: reloading
+    /// never writes the file or generates a keypair.
     fn reload(&self) -> anyhow::Result<Vec<String>> {
-        let loaded = match niox_config::load(&self.config_path) {
-            Ok(loaded) => loaded,
+        let _reloading = self
+            .reloading
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let config = match niox_config::read(&self.config_path) {
+            Ok(config) => config,
             Err(e) => {
                 let e =
                     anyhow::Error::from(e).context("reload refused; keeping the running config");
@@ -154,7 +164,7 @@ impl Daemon {
                 return Err(e);
             }
         };
-        let changes = self.km.reload(loaded.config)?;
+        let changes = self.km.reload(config)?;
         if changes.is_empty() {
             info!("config reloaded; nothing changed");
         }

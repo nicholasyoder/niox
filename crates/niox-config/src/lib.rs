@@ -2,9 +2,12 @@
 //! owned by nioxd. It holds this machine's identity keypair, the peers it
 //! talks to, and per-subsystem settings. See ARCHITECTURE.md.
 //!
-//! [`load`] is the entry point. It also handles first run: if the file is
-//! missing, or has no `[identity]`, a fresh keypair is generated and
-//! written back (mode `0600`) before the config is returned.
+//! [`load`] is the entry point at startup. It also handles first run: if
+//! the file is missing, or has no `[identity]`, a fresh keypair is
+//! generated and written back (mode `0600`) before the config is returned.
+//! [`read`] is for reloading a running daemon: it never writes, and a
+//! file without `[identity]` is an error, since a new keypair would cut
+//! this machine off from every peer that trusts the old one.
 //!
 //! Everything is validated up front, so the rest of niox only ever sees a
 //! well-formed [`Config`]. Errors name the offending field, e.g.
@@ -220,7 +223,10 @@ pub struct Loaded {
 /// fresh identity. If it exists but has no `[identity]` table, appends one,
 /// leaving the rest of the file as it was. Either way the file is written
 /// atomically with mode `0600`, and only after the rest of the config has
-/// validated, so a broken file is never modified.
+/// validated, so a broken file is never modified. If `path` is a symlink,
+/// the file it points to is written and the link kept.
+///
+/// Use this only at startup; a running daemon reloads with [`read`].
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     let config_err = |source| LoadError::Config {
         path: path.to_owned(),
@@ -260,6 +266,21 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     Ok(Loaded {
         config,
         created_identity: true,
+    })
+}
+
+/// Reads and validates the config at `path` without ever writing it: a
+/// missing file or a missing `[identity]` is an error. This is the reload
+/// path; only [`load`], at startup, generates an identity.
+pub fn read(path: &Path) -> Result<Config, LoadError> {
+    let text = std::fs::read_to_string(path).map_err(|source| LoadError::Io {
+        action: "read",
+        path: path.to_owned(),
+        source,
+    })?;
+    parse(&text).map_err(|source| LoadError::Config {
+        path: path.to_owned(),
+        source,
     })
 }
 

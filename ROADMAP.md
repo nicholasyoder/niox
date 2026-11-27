@@ -73,21 +73,7 @@ alike, ordered by severity and by what each one unblocks. All of it
 comes before the tray and settings window. The review finding each item
 came from is named in parentheses.
 
-- [ ] **Reload without `[identity]` re-keys a running nioxd** —
-  `niox_config::load` treats a file without `[identity]` as a first run
-  on reload too (`Daemon::reload` in `nioxd/src/main.rs`): it writes a
-  new keypair into the file and KM restarts under it. Every peer still
-  lists the old key, so all of them refuse this machine, the old private
-  key is gone, and the reply is just "identity changed". The usual way
-  there: replacing `niox.toml` wholesale and running `systemctl reload
-  nioxd`. Generate an identity only at startup; on reload, use `parse`
-  and refuse a config without `[identity]`, keeping the running one.
-  The same write also replaces a symlinked `niox.toml` with a regular
-  file, and a `SIGHUP` and a `nioxctl reload` together race on the temp
-  name `.niox.toml.tmp`: serialize reloads (`load` runs before the KM
-  lock), or make the temp name unique. (CP-1, medium.)
-  *Verification*: a test reloads a config without `[identity]` and gets
-  an error, with the running identity and the file unchanged.
+- [x] **Reload without `[identity]` re-keys a running nioxd** — reload uses `niox_config::read`, which never writes; first run writes through a symlink; reloads are serialized. (CP-1.)
 
 - [ ] **Hot-plug stalls all input while the passthrough device is
   recreated** — `Devices::add` → `State::add_capabilities`

@@ -589,8 +589,11 @@ once it has a design.
 - First run: if the file is missing, nioxd writes a commented default
   with a fresh keypair. If it exists without `[identity]` (e.g. a
   packaged template), one is appended and the rest is left as written.
-  Writes are atomic, mode `0600`, and happen only after the rest of the
-  file has validated.
+  Writes are atomic, mode `0600`, go through a symlinked `niox.toml` to
+  the file it points to, and happen only after the rest of the file has
+  validated. Only startup writes: a reload never generates a keypair,
+  and refuses a file without `[identity]`, keeping the running one,
+  since a new key would cut this machine off from every peer.
 - Validation is strict, so mistakes surface at load rather than at
   runtime: unknown fields are rejected, and errors name the field
   (`peer[1] ("desk").role: unknown role "server"; ...`). Peer names,
