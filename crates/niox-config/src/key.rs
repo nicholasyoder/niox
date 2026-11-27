@@ -20,6 +20,11 @@ pub enum KeyError {
     Length(usize),
     #[error("is all zeros")]
     AllZero,
+    /// A point of small order, whose DH output is all zeros for every
+    /// private key. Trusting one would let anyone complete a handshake as
+    /// that peer, since the static-key DHs would add nothing secret.
+    #[error("is a low-order point, not a usable public key")]
+    LowOrder,
 }
 
 fn decode(text: &str) -> Result<[u8; KEY_LEN], KeyError> {
@@ -54,7 +59,17 @@ impl FromStr for PublicKey {
     type Err = KeyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        decode(s).map(Self)
+        let key = decode(s)?;
+        // Any (clamped) private key will do: it's a multiple of the
+        // cofactor, so it maps every low-order point to zero.
+        let probe = StaticSecret::from([1; KEY_LEN]);
+        if !probe
+            .diffie_hellman(&x25519_dalek::PublicKey::from(key))
+            .was_contributory()
+        {
+            return Err(KeyError::LowOrder);
+        }
+        Ok(Self(key))
     }
 }
 
@@ -158,6 +173,20 @@ mod tests {
             Err(KeyError::AllZero)
         );
         assert_eq!("".parse::<PublicKey>(), Err(KeyError::Length(0)));
+        // 1 is the identity point (order 1); this one has order 8.
+        let mut one = [0u8; KEY_LEN];
+        one[0] = 1;
+        let order8 = [
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f,
+            0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16,
+            0x5f, 0x49, 0xb8, 0x00,
+        ];
+        for low in [one, order8] {
+            assert_eq!(
+                STANDARD.encode(low).parse::<PublicKey>(),
+                Err(KeyError::LowOrder)
+            );
+        }
         assert!("%%%".parse::<PrivateKey>().is_err());
     }
 
