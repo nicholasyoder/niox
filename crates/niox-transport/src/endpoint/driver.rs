@@ -269,13 +269,10 @@ where
             let now = Instant::now();
             self.on_timers(now);
 
-            let wait = self
-                .next_deadline(now)
-                .saturating_duration_since(Instant::now())
-                .clamp(Duration::from_millis(1), MAX_WAIT);
-            // Round up to whole milliseconds so the timeout is only reset
-            // when it changes meaningfully, not before every datagram.
-            let wait = Duration::from_millis(u64::try_from(wait.as_millis()).unwrap_or(1).max(1));
+            let wait = quantize(
+                self.next_deadline(now)
+                    .saturating_duration_since(Instant::now()),
+            );
             let socket = &self.handle.shared.socket;
             if timeout != Some(wait) {
                 if let Err(e) = socket.set_read_timeout(Some(wait)) {
@@ -693,6 +690,23 @@ where
     }
 }
 
+/// Rounds a receive timeout down to a power of two milliseconds, clamped
+/// to 1ms..=[`MAX_WAIT`].
+///
+/// The time to the next deadline shrinks continuously, so with the exact
+/// value the socket timeout would be reset (a syscall) before nearly every
+/// datagram on a busy receive path. Rounded down this way it changes only
+/// about ten times per deadline, at the cost of waking a little early,
+/// which the loop absorbs by computing the remaining wait again.
+fn quantize(wait: Duration) -> Duration {
+    let max = u64::try_from(MAX_WAIT.as_millis()).unwrap_or(u64::MAX);
+    let ms = u64::try_from(wait.as_millis())
+        .unwrap_or(u64::MAX)
+        .clamp(1, max);
+    let pow = 1u64 << ms.ilog2();
+    Duration::from_millis(if ms == max { max } else { pow })
+}
+
 /// Up to 25% extra, so two peers that went down together don't retry in
 /// lockstep.
 fn jitter(delay: Duration) -> Duration {
@@ -707,4 +721,23 @@ fn random_u32() -> u32 {
     let mut bytes = [0; 4];
     let _ = getrandom::fill(&mut bytes);
     u32::from_ne_bytes(bytes) ^ FALLBACK.fetch_add(0x9E37_79B9, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeouts_round_down_to_powers_of_two() {
+        let ms = Duration::from_millis;
+        assert_eq!(quantize(Duration::ZERO), ms(1));
+        assert_eq!(quantize(Duration::from_micros(900)), ms(1));
+        assert_eq!(quantize(ms(3)), ms(2));
+        assert_eq!(quantize(ms(999)), ms(512));
+        assert_eq!(quantize(MAX_WAIT), MAX_WAIT);
+        assert_eq!(quantize(Duration::from_secs(60)), MAX_WAIT);
+        // A shrinking wait changes the timeout only at powers of two.
+        let distinct: std::collections::BTreeSet<_> = (1..=999).map(|m| quantize(ms(m))).collect();
+        assert_eq!(distinct.len(), 10);
+    }
 }
