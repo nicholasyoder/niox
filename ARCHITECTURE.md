@@ -380,6 +380,20 @@ user session.
       output and moves playing streams there, and picks the niox sink
       again once niox-session restarts. A host that's down takes the
       sink with it, so a laptop away from its host plays locally.
+    - *Latency.* Audio played into the sink is heard on the host about
+      200ms later. To let players keep video in step (lip sync), the
+      sink's input port carries a `Latency` param with that delay, as
+      PipeWire's tunnel sinks do. PipeWire adds it to the delay every
+      stream into the sink is told about (pipewire-pulse's
+      `pa_stream_get_latency` included), and players hold video back by
+      it. It starts at the latency target (the client's own, which
+      matches the host's unless they're configured differently). Once
+      Roc's feedback reports the measured end-to-end latency (the
+      longest of the hosts'), it switches to that, and follows it when
+      it moves by 15ms or more. A measured value outside 1ms–5s is taken
+      for clocks that disagree (Roc's measure assumes synced clocks) and
+      ignored. It doesn't yet count the host's own output path. Apps
+      that ignore reported latency still hear the full delay.
     - *Pauses.* PipeWire only runs the sink while something plays into
       it, so captured audio comes in bursts. Sending stops in the gaps,
       and after a gap of more than 100ms each host gets a fresh encoder

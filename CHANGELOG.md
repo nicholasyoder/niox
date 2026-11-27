@@ -5,6 +5,15 @@ Notable changes to niox, newest first. Versions follow
 bump may break the wire protocol or config. The RPM spec's `%changelog`
 and `debian/changelog` carry a one-line summary of each release.
 
+## Unreleased
+
+- **Lip sync on clients**: the "niox → host" output now reports the
+  delay its audio picks up on the way to the host, so video players
+  (mpv, VLC, Firefox, Chromium, and others that ask the sound server)
+  hold video back to match, instead of showing it about 200ms before
+  the sound. It starts at the latency target and follows the measured
+  latency once the host reports it.
+
 ## 0.2.0 — 2026-11-27
 
 Audio: clients' system audio plays on the host.

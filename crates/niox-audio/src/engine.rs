@@ -7,7 +7,9 @@
 //!   long as the process does: if niox-session dies, the session manager
 //!   moves everything playing into it back to a real output. Because apps
 //!   play into it whether or not the machine has speakers, nothing depends
-//!   on audio hardware.
+//!   on audio hardware. It reports the latency its audio picks up on
+//!   the way to the hosts, so players delay their video to match (see
+//!   [`Sink`]).
 //! - **a player per client**, once that client's audio arrives: a
 //!   playback stream into the default output, removed again once the
 //!   client has been quiet for a few seconds.
@@ -65,6 +67,17 @@ const PW_ID_CORE: u32 = 0;
 
 /// Linux's `EPIPE`: the core's error when PipeWire hangs up.
 const EPIPE: i32 = 32;
+
+/// Measured latencies the niox sink believes. Roc's measure assumes the
+/// two machines' clocks agree; one outside this range is taken for
+/// clocks that don't, and ignored.
+const PLAUSIBLE_LATENCY: std::ops::RangeInclusive<Duration> =
+    Duration::from_millis(1)..=Duration::from_secs(5);
+
+/// How far the measured latency has to move from the reported one before
+/// the sink reports it again. Roc's measure wanders by a few
+/// milliseconds; this keeps players from chasing it.
+const LATENCY_STEP: Duration = Duration::from_millis(15);
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -232,9 +245,66 @@ struct State {
 }
 
 /// The niox sink. Fields drop in order: listener first.
+///
+/// Its input port carries a `Latency` param, the extra time its audio
+/// takes to be heard: PipeWire adds it to the delay every stream playing
+/// into the sink is told about, which is what players (through
+/// pipewire-pulse, PulseAudio's `pa_stream_get_latency`) hold video back
+/// by. It starts at the plan's latency target, which is the host's too
+/// unless the two are configured differently, and follows Roc's measured
+/// end-to-end latency once the hosts' feedback reports it.
 struct Sink {
     _listener: StreamListener<Vec<f32>>,
-    _stream: StreamRc,
+    stream: StreamRc,
+    /// The latency the port reports, and whether it was measured.
+    reported: (Duration, bool),
+}
+
+impl Sink {
+    /// Reports the hosts' measured latency, if it's in and has moved far
+    /// enough from what's reported.
+    fn follow_latency(&mut self, streams: &Streams) {
+        let Some(measured) = streams
+            .send_latency()
+            .filter(|l| PLAUSIBLE_LATENCY.contains(l))
+        else {
+            return;
+        };
+        let (reported, was_measured) = self.reported;
+        if was_measured && measured.abs_diff(reported) < LATENCY_STEP {
+            return;
+        }
+        if self.report(measured, true) {
+            let latency_ms = measured.as_millis();
+            if was_measured {
+                debug!(latency_ms, "niox sink latency changed");
+            } else {
+                info!(latency_ms, "niox sink reports its measured latency");
+            }
+        }
+    }
+
+    /// Follows a new latency target, until a measured latency is in.
+    fn follow_target(&mut self, target: Duration) {
+        let (reported, measured) = self.reported;
+        if !measured && reported != target {
+            self.report(target, false);
+        }
+    }
+
+    /// Sets the port's `Latency` param. Whether it worked.
+    fn report(&mut self, latency: Duration, measured: bool) -> bool {
+        let param = latency_param(latency);
+        let Some(pod) = spa::pod::Pod::from_bytes(&param) else {
+            return false;
+        };
+        if let Err(e) = self.stream.update_params(&mut [pod]) {
+            warn!("updating the niox sink's latency: {e}");
+            return false;
+        }
+        self.reported = (latency, measured);
+        true
+    }
 }
 
 struct Player {
@@ -411,8 +481,9 @@ fn session(
         }
     });
 
-    // Once a second: remove quiet clients' players, and give up on a
-    // shutdown PipeWire never confirmed.
+    // Once a second: remove quiet clients' players, bring the sink's
+    // latency up to date, and give up on a shutdown PipeWire never
+    // confirmed.
     let tick = Duration::from_secs(1);
     let timer = mainloop.loop_().add_timer({
         let (state, mainloop) = (Rc::downgrade(&state), mainloop.downgrade());
@@ -434,6 +505,10 @@ fn session(
                 if state.players.remove(&peer).is_some() {
                     info!(peer, "stopped playing a quiet client's audio");
                 }
+            }
+            let State { sink, streams, .. } = &mut *state;
+            if let Some(sink) = sink {
+                sink.follow_latency(streams);
             }
         }
     });
@@ -506,6 +581,9 @@ fn apply_plan(state: &Rc<RefCell<State>>) {
             .retain(|peer, player| streams.is_current(peer, &player.receiver));
     }
     let want_sink = !plan.send_to.is_empty();
+    if let Some(sink) = &mut state.borrow_mut().sink {
+        sink.follow_target(plan.latency);
+    }
     let have_sink = state.borrow().sink.is_some();
     if want_sink && !have_sink {
         match make_sink(state, &plan) {
@@ -541,11 +619,38 @@ fn format_param() -> Vec<u8> {
     position[0] = spa::sys::SPA_AUDIO_CHANNEL_FL;
     position[1] = spa::sys::SPA_AUDIO_CHANNEL_FR;
     info.set_position(position);
-    let object = spa::pod::Object {
+    serialize(spa::pod::Object {
         type_: spa::sys::SPA_TYPE_OBJECT_Format,
         id: spa::sys::SPA_PARAM_EnumFormat,
         properties: info.into(),
-    };
+    })
+}
+
+/// The niox sink's `Latency` param: audio played into it is heard
+/// `latency` later than PipeWire's graph alone would say. It describes
+/// the input port's downstream side, as a sink's latency does.
+fn latency_param(latency: Duration) -> Vec<u8> {
+    use spa::pod::{Property, Value};
+    let ns = i64::try_from(latency.as_nanos()).unwrap_or(i64::MAX);
+    serialize(spa::pod::Object {
+        type_: spa::sys::SPA_TYPE_OBJECT_ParamLatency,
+        id: spa::sys::SPA_PARAM_Latency,
+        properties: vec![
+            Property::new(
+                spa::sys::SPA_PARAM_LATENCY_direction,
+                Value::Id(spa::utils::Id(spa::sys::SPA_DIRECTION_INPUT)),
+            ),
+            Property::new(spa::sys::SPA_PARAM_LATENCY_minQuantum, Value::Float(0.0)),
+            Property::new(spa::sys::SPA_PARAM_LATENCY_maxQuantum, Value::Float(0.0)),
+            Property::new(spa::sys::SPA_PARAM_LATENCY_minRate, Value::Int(0)),
+            Property::new(spa::sys::SPA_PARAM_LATENCY_maxRate, Value::Int(0)),
+            Property::new(spa::sys::SPA_PARAM_LATENCY_minNs, Value::Long(ns)),
+            Property::new(spa::sys::SPA_PARAM_LATENCY_maxNs, Value::Long(ns)),
+        ],
+    })
+}
+
+fn serialize(object: spa::pod::Object) -> Vec<u8> {
     spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
         &spa::pod::Value::Object(object),
@@ -613,17 +718,26 @@ fn make_sink(state: &Rc<RefCell<State>>, plan: &Plan) -> Result<Sink, pw::Error>
         })
         .register()?;
     let format = format_param();
-    let mut params = [spa::pod::Pod::from_bytes(&format).ok_or(pw::Error::CreationFailed)?];
+    let latency = latency_param(plan.latency);
+    let mut params = [
+        spa::pod::Pod::from_bytes(&format).ok_or(pw::Error::CreationFailed)?,
+        spa::pod::Pod::from_bytes(&latency).ok_or(pw::Error::CreationFailed)?,
+    ];
     stream.connect(
         spa::utils::Direction::Input,
         None,
         pw::stream::StreamFlags::MAP_BUFFERS,
         &mut params,
     )?;
-    info!(hosts = ?plan.send_to, "made the niox sink");
+    info!(
+        hosts = ?plan.send_to,
+        latency_ms = plan.latency.as_millis(),
+        "made the niox sink"
+    );
     Ok(Sink {
         _listener: listener,
-        _stream: stream,
+        stream,
+        reported: (plan.latency, false),
     })
 }
 
@@ -765,5 +879,36 @@ mod tests {
             r#"{"name":"alsa_output.pci"}"#.into()
         ))));
         assert!(!DefaultSink::is_ours(None));
+    }
+
+    /// The latency param is a sink's (input direction), in nanoseconds.
+    #[test]
+    fn latency_param_round_trips() {
+        use spa::pod::Value;
+        use spa::pod::deserialize::PodDeserializer;
+        let bytes = latency_param(Duration::from_millis(198));
+        let (_, value) = PodDeserializer::deserialize_any_from(&bytes).unwrap();
+        let Value::Object(object) = value else {
+            panic!("not an object: {value:?}");
+        };
+        assert_eq!(object.type_, spa::sys::SPA_TYPE_OBJECT_ParamLatency);
+        assert_eq!(object.id, spa::sys::SPA_PARAM_Latency);
+        let get = |key| {
+            object
+                .properties
+                .iter()
+                .find(|p| p.key == key)
+                .map(|p| p.value.clone())
+        };
+        assert_eq!(
+            get(spa::sys::SPA_PARAM_LATENCY_direction),
+            Some(Value::Id(spa::utils::Id(spa::sys::SPA_DIRECTION_INPUT)))
+        );
+        for key in [
+            spa::sys::SPA_PARAM_LATENCY_minNs,
+            spa::sys::SPA_PARAM_LATENCY_maxNs,
+        ] {
+            assert_eq!(get(key), Some(Value::Long(198_000_000)));
+        }
     }
 }

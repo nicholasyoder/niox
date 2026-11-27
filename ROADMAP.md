@@ -341,3 +341,34 @@ between steps.
   than rebinding.
   *Verification*: the workspace's `cargo test` passes 20 runs in a row,
   and nothing in the tests binds a port it picked earlier.
+
+- [x] **Audio: lip sync on clients** — video played on a client ran
+  ahead of its audio by the ~200ms the audio takes to reach the host,
+  because the niox sink reported no latency of its own and players had
+  nothing to hold video back by. The sink's port now carries a
+  `Latency` param, which PipeWire adds to the delay each stream playing
+  into it sees (pipewire-pulse's `pa_stream_get_latency` included).
+  It starts at the latency target and follows Roc's measured end-to-end
+  latency once the host's feedback reports it.
+  *Verification*: on the VMs, a pulse client playing into the niox sink
+  sees about 220ms more latency than on a null sink (46ms), and the
+  value moves to the measured latency once it's in.
+
+- [ ] **Audio: lip sync counts the host's output** — Roc's end-to-end
+  latency stops where the host's player reads the decoder, so what the
+  sink reports leaves out the host's own playback path (its graph
+  quantum and output device, tens of ms; more on a Bluetooth output).
+  Have the host measure its player's delay (`pw_stream_get_time_n`) and
+  send it back to the client, on a new audio channel byte or in the
+  control stream, and add it to the sink's latency.
+  *Verification*: with a Bluetooth or other slow output on the host, a
+  client's reported latency grows by about that output's latency, and a
+  lip-sync test video (a clap or beep test) lines up within ~20ms.
+
+- [ ] **Audio: a lower default latency target** — the 200ms default is
+  Roc's, not one measured on a LAN. FEC needs a full block (90ms at 5ms
+  packets) plus jitter headroom. Measure dropouts at 120–160ms on real
+  wired and Wi-Fi machines and lower the default if it holds. Shorter
+  delay helps apps that ignore reported latency (games, calls).
+  *Verification*: a 10-minute stream at the new default has no audible
+  dropouts on wired and Wi-Fi clients.

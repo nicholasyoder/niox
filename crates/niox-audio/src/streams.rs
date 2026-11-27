@@ -318,6 +318,16 @@ impl Streams {
         }
     }
 
+    /// The end-to-end latency of this machine's audio, as the hosts'
+    /// feedback last reported it: the longest, since a player into the
+    /// niox sink has to wait for every host. `None` until one reports.
+    pub(crate) fn send_latency(&self) -> Option<Duration> {
+        lock(&self.senders)
+            .values()
+            .filter_map(Sender::latency)
+            .max()
+    }
+
     /// The gain the plan gives `peer`'s audio: 0 if muted, else 1.
     pub(crate) fn gain(&self, peer: &str) -> f32 {
         if lock(&self.plan).muted.iter().any(|p| p == peer) {
